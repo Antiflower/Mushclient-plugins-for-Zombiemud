@@ -31,15 +31,17 @@ ROUND COUNTER:
 - Auto-resets on creature death
 
 CORPSE HANDLING:
-- Multiple modes: tin, drain, totem, collect, ranger, troll, archer, off
+- Multiple modes: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off
 - Automatic corpse processing on creature death
 - Totem mode with fallback to tinning if totem exists
 - Archer mode includes quiver storage for arrows/bolts
+- Parcher mode stores arrows in quivers 1-3 on 1-second delay (party archer)
+- Necro mode gives items to servant, preserves corpse, and scans frank condition
 - Ignores troll regeneration mobs (flesh pieces)
 
 Commands:
   corpsemode [mode]  - Set corpse handling mode
-                       Valid: tin, drain, totem, collect, ranger, troll, archer, off
+                       Valid: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off
 
 Vulnerability spells tracked:
   - Physical (afflictus corpus)
@@ -51,6 +53,8 @@ Vulnerability spells tracked:
   - Acid (macilentus corium)
   - Poison (macula valetudo)
   - Magic (magus foramen)
+  - Ray of Enervation (spero candeo forem) - Acid, Poison, Phys, Psionic, Electric
+  - Elemental Disarray (nequam victus confundo mentis) - Magic, Fire, Phys, Cold, Asphyx
 ]]>
 </description>
 
@@ -60,9 +64,9 @@ Vulnerability spells tracked:
 
 <aliases>
   <alias
-   match="corpsemode *"
+   match="^corpsemode\s+(\S+)$"
    enabled="y"
-   regexp="n"
+   regexp="y"
    ignore_case="y"
    script="SetCorpseMode"
    sequence="100"
@@ -175,6 +179,58 @@ Vulnerability spells tracked:
   >
   </trigger>
 
+<!-- Ray of Enervation: vulns Acid, Poison, Phys, Psionic, Electric -->
+  <trigger
+   custom_colour="14"
+   enabled="y"
+   group="Vuln"
+   match="You trace the runes of weakness, exhaustion and instability in the air facing .+ and chant the magic words 'spero candeo forem'"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="StartRayOfEnervation"
+  >
+  </trigger>
+
+<!-- Elemental Disarray: vulns Magic, Fire, Phys, Cold, Asphyx -->
+  <trigger
+   custom_colour="14"
+   enabled="y"
+   group="Vuln"
+   match="You trace the runes of chaos, displacement and degeneration in the air facing .+ and chant the magic words 'nequam victus confundo mentis'"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="StartElementalDisarray"
+  >
+  </trigger>
+
+<!-- Tumble: target avoided the vuln spell -->
+  <trigger
+   custom_colour="12"
+   enabled="y"
+   group="Vuln"
+   match="* tumbles and avoids your spell!"
+   regexp="n"
+   send_to="12"
+   sequence="100"
+   script="HandleVulnTumble"
+  >
+  </trigger>
+
+<!-- Resist: target resisted the vuln spell -->
+  <trigger
+   custom_colour="12"
+   enabled="y"
+   group="Vuln"
+   match="* completely resists the effects of your spell!"
+   regexp="n"
+   send_to="12"
+   sequence="100"
+   script="HandleVulnResist"
+  >
+  </trigger>
+
 <!-- ========== ROUND COUNTER ========== -->
 
   <trigger
@@ -210,6 +266,68 @@ Vulnerability spells tracked:
    enabled="y"
    match="There already is a vile totem here!"
    script="FallbackToTin"
+   send_to="12"
+   sequence="95"
+  >
+  </trigger>
+
+<!-- ========== SCAN OUTPUT TRIGGER ========== -->
+
+  <trigger
+   name="ScanOutput"
+   enabled="y"
+   ignore_case="y"
+   match="* is in *"
+   regexp="n"
+   script="HandleScanOutput"
+   send_to="12"
+   sequence="95"
+  >
+  </trigger>
+
+  <trigger
+   name="ScanOutputNotGood"
+   enabled="y"
+   ignore_case="y"
+   match="* is not in a good shape."
+   regexp="n"
+   script="HandleScanOutput"
+   send_to="12"
+   sequence="95"
+  >
+  </trigger>
+
+  <trigger
+   name="ScanOutputAlmostDead"
+   enabled="y"
+   ignore_case="y"
+   match="* is almost DEAD."
+   regexp="n"
+   script="HandleScanOutput"
+   send_to="12"
+   sequence="95"
+  >
+  </trigger>
+
+  <trigger
+   name="ScanOutputSlightlyHurt"
+   enabled="y"
+   ignore_case="y"
+   match="* is slightly hurt*"
+   regexp="n"
+   script="HandleScanOutput"
+   send_to="12"
+   sequence="95"
+  >
+  </trigger>
+
+  <trigger
+   name="ScanOutputModeratelyHurt"
+   enabled="y"
+   ignore_case="y"
+   match="* is moderately hurt*"
+   regexp="n"
+   script="HandleScanOutput"
    send_to="12"
    sequence="95"
   >
@@ -253,50 +371,46 @@ local spell_to_vuln = {
 active_timers = active_timers or {}
 timer_counter = timer_counter or 0
 
-function StartVuln(name, line, wildcards)
-  -- Extract the spell words from the match
-  local spell = string.match(line, "You utter the magic words '([^']+)'")
+-- Track last attempted vuln so tumble handler knows which type failed
+pending_vuln_type = pending_vuln_type or nil
+pending_vuln_cancelled = pending_vuln_cancelled or false
 
-  if not spell then
-    return
-  end
+local function start_vuln_timer(vuln_type, party_message)
+  CancelVulnTimers(vuln_type)
+
+  pending_vuln_type = vuln_type
+  pending_vuln_cancelled = false
+
+  DoAfterSpecial(1, "if not pending_vuln_cancelled then Execute('party say " .. party_message .. "') end; pending_vuln_cancelled = false; pending_vuln_type = nil", sendto.script)
+
+  timer_counter = timer_counter + 1
+  local timer_name = "vuln_" .. vuln_type .. "_" .. timer_counter
+  AddTimer(timer_name, 0, 0, 27, "AnnounceVulnDown('" .. vuln_type .. "', '" .. timer_name .. "')", timer_flag.Enabled + timer_flag.OneShot, "")
+  SetTimerOption(timer_name, "send_to", "12")
+  if not active_timers[vuln_type] then active_timers[vuln_type] = {} end
+  table.insert(active_timers[vuln_type], timer_name)
+  Note("Started " .. vuln_type .. " vulnerability timer (" .. timer_name .. ")")
+end
+
+function StartVuln(name, line, wildcards)
+  local spell = string.match(line, "You utter the magic words '([^']+)'")
+  if not spell then return end
 
   local vuln_type = spell_to_vuln[spell]
-
   if not vuln_type then
     Note("Unknown vulnerability spell: " .. spell)
     return
   end
 
-  -- Cancel any existing timers for this vulnerability type
-  CancelVulnTimers(vuln_type)
+  start_vuln_timer(vuln_type, vuln_type .. " Vuln Up")
+end
 
-  -- Announce vulnerability is up
-  DoAfterSpecial(1, "Execute('party say " .. vuln_type .. " Vuln Up')", sendto.script)
+function StartRayOfEnervation(name, line, wildcards)
+  start_vuln_timer("Enervation", "Ray of Enervation in(Acid, Poison, Phys, Psionic, Electric) vulns")
+end
 
-  -- Create a unique timer name
-  timer_counter = timer_counter + 1
-  local timer_name = "vuln_" .. vuln_type .. "_" .. timer_counter
-
-  -- Create the timer using AddTimer so we can delete it by name
-  AddTimer(
-    timer_name,                           -- timer name
-    0, 0, 27,                             -- hour, minute, second (27 seconds)
-    "AnnounceVulnDown('" .. vuln_type .. "', '" .. timer_name .. "')",  -- send text
-    timer_flag.Enabled + timer_flag.OneShot,  -- flags
-    ""                                    -- script name (empty for inline)
-  )
-
-  -- Set the timer to send to script
-  SetTimerOption(timer_name, "send_to", "12")
-
-  -- Store the timer name
-  if not active_timers[vuln_type] then
-    active_timers[vuln_type] = {}
-  end
-  table.insert(active_timers[vuln_type], timer_name)
-
-  Note("Started " .. vuln_type .. " vulnerability timer (" .. timer_name .. ")")
+function StartElementalDisarray(name, line, wildcards)
+  start_vuln_timer("Disarray", "Elemental Disarray in(Magic, Fire, Phys, Cold, Asphyx) vulns")
 end
 
 function AnnounceVulnDown(vuln_type, timer_name)
@@ -342,12 +456,33 @@ function CancelAllVulnTimers()
   end
 end
 
+function HandleVulnFailed(suffix)
+  if not pending_vuln_type then
+    return
+  end
+
+  local vuln_type = pending_vuln_type
+  pending_vuln_type = nil
+  pending_vuln_cancelled = true
+
+  CancelVulnTimers(vuln_type)
+  Execute("party say " .. vuln_type .. " vuln " .. suffix)
+end
+
+function HandleVulnTumble(name, line, wildcards)
+  HandleVulnFailed("tumbled!")
+end
+
+function HandleVulnResist(name, line, wildcards)
+  HandleVulnFailed("resisted!")
+end
+
 -- ==================== ROUND COUNTER SYSTEM ====================
 
+local round_counter = 0
+
 function IncrementRound(name, line, wildcards)
-  local current = tonumber(GetVariable("ro")) or 0
-  current = current + 1
-  SetVariable("ro", tostring(current))
+  round_counter = round_counter + 1
 end
 
 -- ==================== CORPSE HANDLER SYSTEM ====================
@@ -358,15 +493,23 @@ local default_mode = "tin"
 -- Flag to track if we're waiting for totem response
 waiting_for_totem = false
 
+-- Flag to track if we're waiting for scan output
+waiting_for_scan = false
+
 -- Valid corpse handling modes
 local valid_modes = {
   tin = true,
+  mule = true,
+  disc = true,
   drain = true,
   totem = true,
   collect = true,
   ranger = true,
   troll = true,
   archer = true,
+  necro = true,
+  barb = true,
+  parcher = true,
   off = true
 }
 
@@ -378,7 +521,18 @@ local mode_commands = {
     "get can",
     "eat can"
   },
+  mule = {
+    "give noeq to kev",
+    "tin corpse",
+    "get can",
+    "eat can"
+  },
+  disc = {
+    "put noeq in disc",
+    "tin corpse"
+  },
   drain = {
+	"put all shuriken in pack",
     "put noeq in bag",
     "sdrain corpse"
   },
@@ -405,7 +559,22 @@ local mode_commands = {
     "tin corpse",
     "get can",
     "eat can",
+	"get all arrow from bag",
     "put all in quiver"  -- Archer-specific: store arrows/bolts
+  },
+  necro = {
+    "give noeq to servant",
+    "cast preservation at corpse"
+  },
+  barb = {
+    "put noeq in bag",
+	"oscalp corpse",
+    "use ancestral rite at corpse"
+  },
+  parcher = {
+    -- Commands executed with 1-second delay (handled specially in HandleCorpse)
+    "get all arrow",
+	"put all in quiver"
   },
   off = {}  -- No commands
 }
@@ -417,7 +586,7 @@ function SetCorpseMode(name, line, wildcards)
   mode = mode:match("^%s*(.-)%s*$")
 
   if not valid_modes[mode] then
-    Note("Invalid corpse mode. Valid modes are: tin, drain, totem, collect, ranger, troll, archer, off")
+    Note("Invalid corpse mode. Valid modes are: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off")
     Note("Current mode: " .. GetCurrentMode())
     return
   end
@@ -468,10 +637,31 @@ function HandleCorpse()
     DoAfterSpecial(2, "waiting_for_totem = false", sendto.script)
   end
 
+  -- Parcher mode uses a 1-second delay
+  if mode == "parcher" then
+    DoAfterSpecial(1, "ExecuteParcherCommands()", sendto.script)
+    return
+  end
+
   -- Execute all commands immediately
   for _, cmd in ipairs(commands) do
     Send(cmd)
   end
+
+  -- If necro mode, scan frank after corpse handling
+  if mode == "necro" then
+    waiting_for_scan = true
+    -- Clear the flag after 3 seconds if we don't get the scan output
+    DoAfterSpecial(3, "waiting_for_scan = false", sendto.script)
+    -- Send scan command after a short delay to allow corpse commands to execute
+    DoAfterSpecial(0.5, "Send('scan frank')", sendto.script)
+  end
+end
+
+function ExecuteParcherCommands()
+  -- Execute parcher commands (put arrows in quivers)
+	Send("get all arrow")
+	Send("put all in quiver")
 end
 
 function FallbackToTin(name, line, wildcards)
@@ -490,6 +680,21 @@ function FallbackToTin(name, line, wildcards)
   Send("eat can")
 end
 
+function HandleScanOutput(name, line, wildcards)
+  -- Only act if we're waiting for scan output
+  if not waiting_for_scan then
+    return
+  end
+
+  waiting_for_scan = false
+
+  -- Extract the full scan message from the line
+  local scan_message = line
+
+  -- Send the scan result to party channel
+  Execute("party say " .. scan_message)
+end
+
 -- ==================== SHARED DEATH HANDLER ====================
 
 function OnCreatureDeath(name, line, wildcards)
@@ -502,15 +707,10 @@ function OnCreatureDeath(name, line, wildcards)
   end
 
   -- ===== ROUND COUNTER LOGIC =====
-  local rounds = tonumber(GetVariable("ro")) or 0
-
-  -- Display round counter
-  if rounds > 0 then
-    Note("This combat was a total of " .. rounds .. " rounds")
+  if round_counter > 0 then
+    Note("This combat was a total of " .. round_counter .. " rounds")
   end
-
-  -- Reset round counter
-  SetVariable("ro", "0")
+  round_counter = 0
   Note("Round counter reset to zero")
 
   -- ===== VULNERABILITY TIMER LOGIC =====
@@ -525,22 +725,20 @@ end
 -- ==================== PLUGIN EVENTS ====================
 
 function OnPluginInstall()
-  -- Initialize round counter
-  if GetVariable("ro") == nil then
-    SetVariable("ro", "0")
+  if IsPluginInstalled("94925710eda2ee22c3a5fd4a") and GetPluginVariable("94925710eda2ee22c3a5fd4a", "startup_mode") == "verbose" then
+    ColourNote("green", "", "Combat Manager v1.1 loaded")
+    ColourNote("cyan", "", "  - Vulnerability timer tracking (9 types)")
+    ColourNote("cyan", "", "  - Round counter")
+    ColourNote("cyan", "", "  - Corpse handling (" .. GetCurrentMode() .. " mode)")
+    ColourNote("yellow", "", "Use 'corpsemode [mode]' to change corpse handling")
+    ColourNote("yellow", "", "Modes: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off")
   end
-
-  ColourNote("green", "", "Combat Manager v1.1 loaded")
-  ColourNote("cyan", "", "  - Vulnerability timer tracking (9 types)")
-  ColourNote("cyan", "", "  - Round counter")
-  ColourNote("cyan", "", "  - Corpse handling (" .. GetCurrentMode() .. " mode)")
-  ColourNote("yellow", "", "Use 'corpsemode [mode]' to change corpse handling")
-  ColourNote("yellow", "", "Modes: tin, drain, totem, collect, ranger, troll, archer, off")
 end
 
 function OnPluginSaveState()
-  -- Save the round counter
-  SetVariable("ro", tostring(GetVariable("ro") or "0"))
+  -- corpse_mode is saved inline by SetCorpseMode on every change
+  -- round counter is saved inline by IncrementRound and reset inline by OnCreatureDeath
+  -- vuln timers and runtime flags (active_timers, pending_vuln_type, etc.) are session-only state
 end
 
 ]]>

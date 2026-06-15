@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="ZombieMUD_Miniwindow_Manager"
+   author="Codex"
+   id="11e1d11e4a0d932dd870363f"
+   language="Lua"
+   purpose="Keeps ZombieMUD miniwindows in a stable front/back order"
+   save_state="y"
+   date_written="2026-06-11"
+   requires="4.73"
+   version="1.1"
+>
+<description trim="y">
+<![CDATA[
+ZombieMUD Miniwindow Manager
+
+Plugins can register miniwindows with:
+  CallPlugin("11e1d11e4a0d932dd870363f", "registerMiniwindow", window_id)
+
+Useful commands:
+  zombie windows list  - list registered miniwindows
+  zwindows             - same as zombie windows list
+]]>
+</description>
+</plugin>
+
+<aliases>
+  <alias
+    match="^(?:zombie windows list|zwindows)$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="list_windows"
+    sequence="100"
+  />
+</aliases>
+
+<script>
+<![CDATA[
+
+local used_numbers = {}
+
+local function variable_name(window_id)
+  return "z_" .. tostring(window_id)
+end
+
+local function sorted_keys(t)
+  local keys = {}
+  for k, _ in pairs(t) do
+    keys[#keys + 1] = k
+  end
+  table.sort(keys)
+  return keys
+end
+
+local function first_free_number()
+  local n = 1
+  while used_numbers[n] do
+    n = n + 1
+  end
+  return n
+end
+
+local function display_name(window_id)
+  window_id = tostring(window_id or "")
+  if string.find(window_id, "^msg_router_channels_") then
+    return "Messages: Channels"
+  end
+  if string.find(window_id, "^msg_router_tells_") then
+    return "Messages: Tells"
+  end
+  if string.find(window_id, "^party_bars_") then
+    return "Party Bars"
+  end
+  return window_id
+end
+
+local function remove_window(window_id)
+  for n, id in pairs(used_numbers) do
+    if id == window_id then
+      used_numbers[n] = nil
+    end
+  end
+end
+
+function arrangeZ()
+  local packed = {}
+  for _, n in ipairs(sorted_keys(used_numbers)) do
+    packed[#packed + 1] = used_numbers[n]
+  end
+
+  used_numbers = {}
+  for n, window_id in ipairs(packed) do
+    used_numbers[n] = window_id
+    SetVariable(variable_name(window_id), tostring(n))
+    if WindowInfo(window_id, 1) then
+      WindowSetZOrder(window_id, n)
+    end
+  end
+end
+
+function registerMiniwindow(window_id)
+  window_id = tostring(window_id or "")
+  if window_id == "" then
+    return
+  end
+
+  remove_window(window_id)
+  local wanted = tonumber(GetVariable(variable_name(window_id)))
+  if not wanted or used_numbers[wanted] then
+    wanted = first_free_number()
+  end
+
+  used_numbers[wanted] = window_id
+  arrangeZ()
+end
+
+function boostMe(window_id)
+  window_id = tostring(window_id or "")
+  if window_id == "" then
+    return
+  end
+
+  remove_window(window_id)
+  used_numbers[first_free_number()] = window_id
+  arrangeZ()
+end
+
+function dropMe(window_id)
+  window_id = tostring(window_id or "")
+  if window_id == "" then
+    return
+  end
+
+  local packed = { window_id }
+  remove_window(window_id)
+  for _, n in ipairs(sorted_keys(used_numbers)) do
+    packed[#packed + 1] = used_numbers[n]
+  end
+
+  used_numbers = {}
+  for n, id in ipairs(packed) do
+    used_numbers[n] = id
+  end
+  arrangeZ()
+end
+
+function list_windows()
+  print("")
+  ColourNote("paleturquoise", "", "ZombieMUD miniwindows:")
+  local count = 0
+  for _, n in ipairs(sorted_keys(used_numbers)) do
+    count = count + 1
+    local window_id = used_numbers[n]
+    local visible = WindowInfo(window_id, 5) and "visible" or "hidden"
+    local label = display_name(window_id)
+    ColourNote("khaki", "", "  " .. n .. ": " .. label .. " (" .. visible .. ")")
+    if label ~= window_id then
+      ColourNote("dimgray", "", "     id: " .. window_id)
+    end
+  end
+  if count == 0 then
+    ColourNote("yellow", "", "  No miniwindows have registered yet.")
+  end
+  print("")
+end
+
+function OnPluginInstall()
+  used_numbers = {}
+  BroadcastPlugin(996, "re-register z")
+end
+
+function OnPluginSaveState()
+  arrangeZ()
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+  if msg == 996 and text == "re-register z" then
+    arrangeZ()
+  end
+end
+
+function OnPluginDisable()
+  EnablePlugin(GetPluginID(), true)
+  ColourNote("white", "blue", "ZombieMUD Miniwindow Manager stays enabled because other visual plugins use it.")
+end
+
+]]>
+</script>
+
+</muclient>

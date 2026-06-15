@@ -1,0 +1,363 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="ZombieMUD_Core_Lite"
+   author="Codex"
+   id="94925710eda2ee22c3a5fd4b"
+   language="Lua"
+   purpose="Checks, loads, and reloads a small ZombieMUD plugin set"
+   save_state="y"
+   date_written="2026-06-15"
+   requires="4.00"
+   version="1.0"
+>
+<description trim="y">
+<![CDATA[
+ZombieMUD Core Lite
+
+This lightweight core manages only:
+  Message_Router
+  Combat_Manager
+  Know_Your_Audience
+  simplestepper
+
+Useful commands:
+  zlite              - show help
+  zlite status       - show plugin health and common settings
+  zlite plugins load - try to load or enable the lite plugin set
+  zlite reload       - reload all lite plugins
+  zlite reload list  - show reload targets
+]]>
+</description>
+</plugin>
+
+<aliases>
+  <alias
+    match="^zlite(?:\s+help)?$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="zlite_help_alias"
+    sequence="100"
+  />
+  <alias
+    match="^zlite\s+status$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="zlite_status_alias"
+    sequence="100"
+  />
+  <alias
+    match="^zlite\s+plugins\s+check$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="zlite_check_alias"
+    sequence="100"
+  />
+  <alias
+    match="^zlite\s+plugins\s+load$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="zlite_load_alias"
+    sequence="100"
+  />
+  <alias
+    match="^zlite\s+reload(?:\s+(.+))?$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="zlite_reload_alias"
+    sequence="100"
+  />
+  <alias
+    match="^zlite\s+sounds\s+background$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="zlite_toggle_background_sounds"
+    sequence="100"
+  />
+</aliases>
+
+<script>
+<![CDATA[
+require "checkplugin"
+
+local MESSAGE_ID  = "cb84a526b476f69f403519da"
+local COMBAT_ID   = "a1b2c3d4e5f6a7b8c9d0e1f4"
+local AUDIENCE_ID = "a1b2c3d4e5f6a7b8c9d0e1f5"
+local STEPPER_ID  = "999456123456123456123456"
+
+local plugin_order = {
+  { key = "messages", id = MESSAGE_ID,  name = "Message_Router" },
+  { key = "combat",   id = COMBAT_ID,   name = "Combat_Manager" },
+  { key = "audience", id = AUDIENCE_ID, name = "Know_Your_Audience" },
+  { key = "stepper",  id = STEPPER_ID,  name = "simplestepper" },
+}
+
+local reload_aliases = {
+  [""] = "all",
+  all = "all",
+  message = "messages",
+  messages = "messages",
+  msg = "messages",
+  router = "messages",
+  combat = "combat",
+  combat_manager = "combat",
+  know = "audience",
+  kya = "audience",
+  audience = "audience",
+  know_your_audience = "audience",
+  simple = "stepper",
+  stepper = "stepper",
+  simplestepper = "stepper",
+}
+
+local function trim(text)
+  return (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function plugin_by_key(key)
+  for _, plugin in ipairs(plugin_order) do
+    if plugin.key == key then
+      return plugin
+    end
+  end
+  return nil
+end
+
+local function short_status(id)
+  if not IsPluginInstalled(id) then
+    return "missing"
+  end
+  if not GetPluginInfo(id, 17) then
+    return "disabled"
+  end
+  return "enabled"
+end
+
+local function yes_no(value)
+  if value == "1" or value == "true" or value == true then
+    return "on"
+  end
+  return "off"
+end
+
+local function plugin_var(id, name, default)
+  local ok, value = pcall(GetPluginVariable, id, name)
+  if ok and value ~= nil and value ~= "" then
+    return value
+  end
+  return default
+end
+
+local function visible_state(window_id)
+  if not WindowInfo(window_id, 1) then
+    return "not created yet"
+  end
+  return WindowInfo(window_id, 5) and "visible" or "hidden"
+end
+
+local function setting_line(label, value)
+  ColourNote("khaki", "", "  " .. label .. ": " .. tostring(value))
+end
+
+local function command_line(command, description)
+  ColourNote("khaki", "", "  " .. command .. "  - " .. description)
+end
+
+local function print_help_group(title, lines)
+  ColourNote("paleturquoise", "", title)
+  for _, line in ipairs(lines) do
+    command_line(line[1], line[2])
+  end
+end
+
+local function load_plugins()
+  for _, plugin in ipairs(plugin_order) do
+    do_plugin_check_now(plugin.id, plugin.name)
+  end
+end
+
+local function print_plugin_status(show_ok)
+  local issues = 0
+  for _, plugin in ipairs(plugin_order) do
+    local status = short_status(plugin.id)
+    if status == "enabled" then
+      if show_ok then
+        ColourNote("darkseagreen", "", "  OK: " .. plugin.name .. " is loaded and enabled.")
+      end
+    else
+      issues = issues + 1
+      ColourNote("yellow", "", "  " .. plugin.name .. " is " .. status .. ".")
+    end
+  end
+  return issues
+end
+
+local function reload_one(plugin)
+  if not IsPluginInstalled(plugin.id) then
+    ColourNote("yellow", "", "  skipped: " .. plugin.name .. " is not loaded. Try 'zlite plugins load'.")
+    return false
+  end
+
+  if not GetPluginInfo(plugin.id, 17) then
+    EnablePlugin(plugin.id, true)
+  end
+
+  local ok, result = pcall(ReloadPlugin, plugin.id)
+  if ok and result == 0 then
+    ColourNote("lime", "", "  OK: " .. plugin.name .. " reloaded.")
+    return true
+  end
+
+  if ok then
+    ColourNote("red", "", "  problem: " .. plugin.name .. " reload returned code " .. tostring(result) .. ".")
+  else
+    ColourNote("red", "", "  problem: " .. plugin.name .. " reload failed: " .. tostring(result))
+  end
+  return false
+end
+
+local function print_reload_targets()
+  print("")
+  ColourNote("lime", "", "ZombieMUD Core Lite reload targets")
+  print_help_group("Targets:", {
+    { "zlite reload", "reload all lite plugins" },
+    { "zlite reload messages", "reload Message Router" },
+    { "zlite reload combat", "reload Combat Manager" },
+    { "zlite reload audience", "reload Know Your Audience" },
+    { "zlite reload stepper", "reload SimpleStepper" },
+  })
+  print("")
+end
+
+function zlite_help_alias()
+  print("")
+  ColourNote("lime", "", "ZombieMUD Core Lite")
+  print_help_group("Core Lite:", {
+    { "zlite status", "show the health of the lite plugin set" },
+    { "zlite plugins check", "show missing or disabled lite plugins" },
+    { "zlite plugins load", "try to load or enable the lite plugin set" },
+    { "zlite reload", "reload all lite plugins without closing the world" },
+    { "zlite reload list", "show reload targets" },
+    { "zlite sounds background", "toggle sounds while MUSHclient is not focused" },
+  })
+  print_help_group("Managed plugin commands:", {
+    { "msgwin", "show or hide message windows" },
+    { "msgsize both 800 20", "resize message windows" },
+    { "msglog on/off", "turn message logging on or off" },
+    { "msgbell on/off", "turn tell bell on or off" },
+    { "corpsemode <mode>", "set corpse handling; use off to disable" },
+    { "- <path> / . / ..", "load and step through SimpleStepper paths" },
+  })
+  ColourNote("khaki", "", "  Know Your Audience has no command alias; it watches the spell output automatically.")
+  print("")
+end
+
+function zlite_status_alias()
+  print("")
+  ColourNote("lime", "", "ZombieMUD Core Lite status")
+  ColourNote("paleturquoise", "", "Plugins:")
+  print_plugin_status(true)
+
+  ColourNote("paleturquoise", "", "Common settings:")
+  setting_line("Sounds in background", GetOption("play_sounds_in_background") == 1 and "on" or "off")
+  if IsPluginInstalled(MESSAGE_ID) then
+    setting_line("Message logging", yes_no(plugin_var(MESSAGE_ID, "log_messages", "1")))
+    setting_line("Tell bell", yes_no(plugin_var(MESSAGE_ID, "bell_on_tell", "0")))
+    setting_line("Channels window", visible_state("msg_router_channels_" .. MESSAGE_ID))
+    setting_line("Tells window", visible_state("msg_router_tells_" .. MESSAGE_ID))
+  end
+  if IsPluginInstalled(COMBAT_ID) then
+    setting_line("Corpse mode", plugin_var(COMBAT_ID, "corpse_mode", "(default)"))
+  end
+  ColourNote("cyan", "", "Type 'zlite' for Lite commands.")
+  print("")
+end
+
+function zlite_check_alias()
+  print("")
+  ColourNote("paleturquoise", "", "ZombieMUD Core Lite plugins:")
+  local issues = print_plugin_status(true)
+  if issues == 0 then
+    ColourNote("lime", "", "Core Lite plugins look good.")
+  else
+    ColourNote("yellow", "", "Found " .. issues .. " issue(s). Type 'zlite plugins load' to try fixing them.")
+  end
+  print("")
+end
+
+function zlite_load_alias()
+  ColourNote("cyan", "", "Checking ZombieMUD Core Lite plugins...")
+  load_plugins()
+  zlite_check_alias()
+end
+
+function zlite_reload_alias(name, line, wildcards)
+  local requested = trim(wildcards[1] or ""):lower():gsub("%s+", "_")
+  local target = reload_aliases[requested] or requested
+
+  if target == "help" or target == "list" or target == "targets" then
+    print_reload_targets()
+    return
+  end
+
+  print("")
+  ColourNote("cyan", "", "Reloading ZombieMUD Core Lite target: " .. (requested ~= "" and requested or "all"))
+  local reloaded = 0
+  if target == "all" then
+    for _, plugin in ipairs(plugin_order) do
+      if reload_one(plugin) then
+        reloaded = reloaded + 1
+      end
+    end
+  else
+    local plugin = plugin_by_key(target)
+    if not plugin then
+      ColourNote("yellow", "", "Unknown reload target: " .. target)
+      ColourNote("cyan", "", "Type 'zlite reload list' to see valid reload targets.")
+      print("")
+      return
+    end
+    if reload_one(plugin) then
+      reloaded = reloaded + 1
+    end
+  end
+
+  if reloaded > 0 then
+    ColourNote("lime", "", "Reload complete. Type 'zlite status' if you want to check the set.")
+  else
+    ColourNote("yellow", "", "No plugins were reloaded.")
+  end
+  print("")
+end
+
+function zlite_toggle_background_sounds()
+  if GetOption("play_sounds_in_background") == 0 then
+    SetOption("play_sounds_in_background", 1)
+    ColourNote("lime", "", "Sounds will keep playing when MUSHclient is in the background.")
+  else
+    SetOption("play_sounds_in_background", 0)
+    ColourNote("yellow", "", "Sounds will only play while MUSHclient is active.")
+  end
+end
+
+function OnPluginListChanged()
+  load_plugins()
+end
+
+function OnPluginInstall()
+  load_plugins()
+  ColourNote("cyan", "", "ZombieMUD Core Lite loaded. Type 'zlite' for commands or 'zlite status' for a quick check.")
+end
+
+]]>
+</script>
+
+</muclient>

@@ -2,6 +2,7 @@
 <!DOCTYPE muclient>
 
 <!-- Combined plugin merging Tells_window.xml + Channels_window.xml -->
+<!-- v3.0: converted from blank-world routing to in-window miniwindows -->
 
 <muclient>
 <plugin
@@ -9,35 +10,115 @@
    author="Nick Gammon (merged by Claude)"
    id="cb84a526b476f69f403519da"
    language="Lua"
-   purpose="Routes tells and channels to separate world windows with logging"
+   purpose="Routes tells and channels to miniwindows with logging"
    date_written="2025-11-28"
-   requires="4.08"
-   version="2.0"
+   requires="4.58"
+   version="3.6"
+   save_state="y"
    >
 <description trim="y">
 <![CDATA[
 Combined message router for ZombieMUD.
 
-Redirects different message types to separate world windows:
-- Tells → tells.mcl window
-- Channels → channels.mcl window
+Displays different message types in floating miniwindows:
+- Channels -> draggable miniwindow (top-right by default)
+- Tells    -> draggable miniwindow (bottom-right by default)
 
 Features:
-- Automatic logging to ZombieMush/Logs/ directory
+- Automatic logging to ZombieMush/Logs/ directory (Discord bot compatible)
 - Supports all bracket types: [], {}, <>
 - Separate active/last log files
 - Optional bell sound on incoming tells
 - Timezone-aware logging
+- Windows are draggable and remember position across sessions
+- Windows register with the ZombieMUD miniwindow manager if it is loaded
+
+Aliases:
+- msgwin              : toggle both windows on/off
+- msgreset            : swap the window positions
+- msgsize target W R  : resize channels/tells/both to width W and R visible rows
+- msglog [on|off]     : show or change file logging
+- msgbell [on|off]    : show or change tell bell sound
+- msgchannel allow x  : allow <x> as a real channel
+- msgchannel block x  : stop <x> from routing as a channel
+- msgchannel unblock x: remove a custom block
+ - msgchannels         : list custom channel routing changes
 
 Configuration:
-- tells_world: World file name for tells (default: "tells")
-- channels_world: World file name for channels (default: "channels")
 - bell_on_tell: Play sound on incoming tell (default: 0 = off)
 - log_messages: Enable/disable logging (default: 1 = on)
 ]]>
 </description>
 
 </plugin>
+
+<!--  Aliases  -->
+
+<aliases>
+  <alias
+    match="^msgwin$"
+    enabled="y"
+    regexp="y"
+    script="toggle_msg_windows"
+    sequence="100"
+  />
+  <alias
+    match="^msgreset$"
+    enabled="y"
+    regexp="y"
+    script="reset_window_positions"
+    sequence="100"
+  />
+  <alias
+    match="^msgsize\s+(channels|tells|both)\s+(\d+)\s+(\d+)$"
+    enabled="y"
+    regexp="y"
+    script="set_window_size"
+    sequence="100"
+  />
+  <alias
+    match="^msglog(?:\s+(on|off))?$"
+    enabled="y"
+    regexp="y"
+    script="set_logging"
+    sequence="100"
+  />
+  <alias
+    match="^msgbell(?:\s+(on|off))?$"
+    enabled="y"
+    regexp="y"
+    script="set_bell"
+    sequence="100"
+  />
+  <alias
+    match="^msgchannel\s+allow\s+([A-Za-z][A-Za-z0-9+]*)$"
+    enabled="y"
+    regexp="y"
+    script="allow_angle_channel"
+    sequence="100"
+  />
+  <alias
+    match="^msgchannel\s+block\s+([A-Za-z][A-Za-z0-9+]*)$"
+    enabled="y"
+    regexp="y"
+    script="block_angle_channel"
+    sequence="100"
+  />
+  <alias
+    match="^msgchannel\s+unblock\s+([A-Za-z][A-Za-z0-9+]*)$"
+    enabled="y"
+    regexp="y"
+    script="unblock_angle_channel"
+    sequence="100"
+  />
+  <alias
+    match="^msgchannels$"
+    enabled="y"
+    regexp="y"
+    script="list_channel_overrides"
+    sequence="100"
+  />
+</aliases>
 
 <!--  Triggers  -->
 
@@ -46,29 +127,54 @@ Configuration:
 <!-- ==================== CHANNEL TRIGGERS ==================== -->
 
 <!-- Channel messages - all bracket types: [channel], {channel}, <channel> -->
+<!-- Only matches if bracket content starts with a letter (excludes numeric-only like [110]) -->
 <trigger
   enabled="y"
-  match="^(?:\[|\{|\<)(\w+)(?:\]|\}|\>): .*$"
+  match="^(?:\[|\{|\&lt;)([a-zA-Z][a-zA-Z0-9+]*)(?:\]|\}|\&gt;):\s?.*$"
   regexp="y"
   omit_from_output="y"
   sequence="100"
   script="route_channel"
 ></trigger>
 
-<!-- Channel messages with player name prefix -->
+<!-- Channel messages without colon (e.g., [info] message) - requires space and text after -->
+<!-- Only matches [] and {} brackets - <> excluded to avoid matching item buffs like <bound> -->
 <trigger
   enabled="y"
-  match="^[a-zA-Z ()]+ (?:\[|\{|\<)(\w+)(?:\]|\}|\>): .*$"
+  match="^(?:\[|\{)([a-zA-Z][a-zA-Z0-9+]*)(?:\]|\})\s+[A-Za-z].*$"
   regexp="y"
   omit_from_output="y"
   sequence="100"
   script="route_channel"
 ></trigger>
 
-<!-- Channel messages with timestamp (last logs) -->
+<!-- Channel messages with player name prefix (including "the toasted" suffix) -->
+<!-- Only matches if bracket content starts with a letter (excludes numeric-only like [110]) -->
 <trigger
   enabled="y"
-  match="^\w*\s*\d*\s*\d+:\d+ (?:\w*|\w+ \w+ \w+|\w+ \(\w+\))\s*(?:\[|\{|\<)(\w+)(?:\]|\}|\>): .*$"
+  match="^(\w+(?:\s+the\s+toasted)?)\s+(?:\(helper\)\s+)?(?:\[|\{|\&lt;)([a-zA-Z][a-zA-Z0-9+]*)(?:\]|\}|\&gt;):\s?.*$"
+  regexp="y"
+  omit_from_output="y"
+  sequence="100"
+  script="route_channel"
+></trigger>
+
+<!-- Channel messages with player name prefix, without colon (including "the toasted" suffix) -->
+<!-- Only matches [] and {} brackets - <> excluded to avoid matching item buffs like <bound> -->
+<trigger
+  enabled="y"
+  match="^(\w+(?:\s+the\s+toasted)?)\s+(?:\(helper\)\s+)?(?:\[|\{)([a-zA-Z][a-zA-Z0-9+]*)(?:\]|\})\s+[A-Za-z].*$"
+  regexp="y"
+  omit_from_output="y"
+  sequence="100"
+  script="route_channel"
+></trigger>
+
+<!-- Channel messages with timestamp (last logs) (including "the toasted" suffix) -->
+<!-- Only matches if bracket content starts with a letter (excludes numeric-only like [110]) -->
+<trigger
+  enabled="y"
+  match="^\w*\s*\d*\s*\d+:\d+\s+(\w+(?:\s+the\s+toasted)?)\s+(?:\(helper\)\s+)?(?:\[|\{|\&lt;)([a-zA-Z][a-zA-Z0-9+]*)(?:\]|\}|\&gt;):\s?.*$"
   regexp="y"
   omit_from_output="y"
   sequence="100"
@@ -77,20 +183,20 @@ Configuration:
 
 <!-- ==================== TELL TRIGGERS ==================== -->
 
-<!-- Incoming tells - active -->
+<!-- Incoming tells - active (including "the toasted" suffix) -->
 <trigger
   enabled="y"
-  match="^[a-zA-Z]+.+tells you (?:and .+? )*'.+?'"
+  match="^(\w+(?:\s+the\s+toasted)?)\s+tells you[^']*'(.+?)'$"
   script="route_tell_incoming"
   regexp="y"
   omit_from_output="y"
   sequence="100"
 ></trigger>
 
-<!-- Incoming tells - last logs with timestamp -->
+<!-- Incoming tells - last logs with timestamp (including "the toasted" suffix) -->
 <trigger
   enabled="y"
-  match="^\w*\s*\d*\s*\d+:\d+.+ tells you.+'.+'$"
+  match="^\w*\s*\d*\s*\d+:\d+\s+(\w+(?:\s+the\s+toasted)?)\s+tells you[^']*'(.+?)'$"
   script="last_route_tell"
   regexp="y"
   omit_from_output="y"
@@ -124,17 +230,121 @@ Configuration:
 <script>
 <![CDATA[
 
+require "movewindow"
+
 -- ==================== CONFIGURATION ====================
 
--- World file names (without .mcl extension)
-tells_world = "tells"
-channels_world = "channels"
+local ZOMBIE_WINDOW_MANAGER_ID = "11e1d11e4a0d932dd870363f"
+local register_with_window_manager
+local boost_window
+
+-- Whitelist of valid channel names for angle bracket <> format
+-- This prevents item buffs like <bound> from being mistaken for channels
+angle_bracket_channels = {
+  -- Guild channels
+  ["abjurer"] = true, ["artiste"] = true, ["baba"] = true, ["balance"] = true,
+  ["bard"] = true, ["chaos"] = true, ["cleric"] = true, ["company"] = true,
+  ["dk"] = true, ["druid"] = true, ["fighter"] = true, ["healer"] = true,
+  ["loc"] = true, ["mage"] = true, ["monk"] = true, ["myrmidon"] = true,
+  ["necro"] = true, ["order"] = true, ["paladin"] = true, ["psionicist"] = true,
+  ["ranger"] = true, ["samurai"] = true, ["spellblade"] = true, ["trader"] = true,
+  ["warder"] = true, ["warlock"] = true,
+  -- Prestige/Race/War channels
+  ["prestige"] = true, ["legion"] = true, ["seraph"] = true, ["cruoris"] = true,
+  -- Public channels
+  ["alert"] = true, ["anomaly"] = true, ["bolo"] = true, ["chat"] = true,
+  ["chess"] = true, ["cruise"] = true, ["deaths"] = true, ["elf"] = true,
+  ["fin"] = true, ["frags"] = true, ["gobo"] = true, ["gym"] = true,
+  ["hifi"] = true, ["ifin"] = true, ["imud"] = true, ["ister"] = true,
+  ["juopot"] = true, ["kfm"] = true, ["legends"] = true, ["linux"] = true,
+  ["lord"] = true, ["movie"] = true, ["mud"] = true, ["mudlet"] = true,
+  ["music"] = true, ["newbie"] = true, ["nhl"] = true, ["nt"] = true,
+  ["ogre"] = true, ["omx"] = true, ["orc"] = true, ["oz"] = true,
+  ["reincs"] = true, ["sales"] = true, ["tec"] = true, ["tf"] = true,
+  ["travel"] = true, ["trigs"] = true, ["trivia"] = true, ["troll"] = true,
+  ["wow"] = true, ["xmud"] = true, ["za"] = true,
+  -- Read-only channels
+  ["info"] = true, ["inform"] = true, ["newsbot"] = true, ["tv"] = true, ["tv+"] = true,
+  -- Private channels (commonly used)
+  ["abyss"] = true, ["au"] = true, ["beoutch"] = true, ["ber"] = true,
+  ["bong"] = true, ["bore"] = true, ["bruha"] = true, ["cb"] = true,
+  ["cid"] = true, ["cm"] = true, ["cow"] = true, ["curse"] = true,
+  ["de"] = true, ["dogs"] = true, ["dtest"] = true, ["dutchman"] = true,
+  ["dzone"] = true, ["eqq"] = true, ["espoo"] = true, ["fj"] = true,
+  ["flex"] = true, ["gc"] = true, ["gl"] = true, ["glance"] = true,
+  ["hb"] = true, ["hc"] = true, ["hemet"] = true, ["highbie"] = true,
+  ["hmm"] = true, ["hop"] = true, ["jaeger"] = true, ["jax"] = true,
+  ["jes"] = true, ["jop"] = true, ["kala"] = true, ["keke"] = true,
+  ["kepustan+"] = true, ["keu"] = true, ["kiq"] = true, ["kobah"] = true,
+  ["kramma"] = true, ["kyat"] = true, ["kyax"] = true, ["lt"] = true,
+  ["mexx"] = true, ["mjp"] = true, ["molo"] = true, ["murre"] = true,
+  ["myyra"] = true, ["nb"] = true, ["nectest"] = true, ["nif"] = true,
+  ["nin"] = true, ["oit"] = true, ["om"] = true, ["omo"] = true,
+  ["oo"] = true, ["oops"] = true, ["osmo"] = true, ["peppu"] = true,
+  ["pesamieli"] = true, ["pits"] = true, ["poker"] = true, ["poo"] = true,
+  ["pop"] = true, ["por"] = true, ["pore"] = true, ["q"] = true,
+  ["rh"] = true, ["rip"] = true, ["routa"] = true, ["saludo"] = true,
+  ["scc"] = true, ["sick"] = true, ["sieni"] = true, ["sisu"] = true,
+  ["slayer"] = true, ["soc"] = true, ["soctest"] = true, ["sodom"] = true,
+  ["sorc"] = true, ["sr"] = true, ["swe"] = true, ["tampere"] = true,
+  ["teeve"] = true, ["thc"] = true, ["tre"] = true, ["turku"] = true,
+  ["uli"] = true, ["usa"] = true, ["vermis"] = true, ["war"] = true,
+  ["wol"] = true, ["wolf"] = true, ["x"] = true, ["xx"] = true,
+  ["xxx"] = true, ["z"] = true, ["zom"] = true,
+}
+
+local custom_angle_channels = {}
+local blocked_angle_channels = {}
+
+local function trim(text)
+  return (text or ""):match("^%s*(.-)%s*$")
+end
+
+local function split_words(text)
+  local out = {}
+  for item in string.gmatch(text or "", "[^,]+") do
+    item = trim(item):lower()
+    if item ~= "" then
+      out[item] = true
+    end
+  end
+  return out
+end
+
+local function join_keys(t)
+  local keys = {}
+  for k, v in pairs(t) do
+    if v then
+      keys[#keys + 1] = k
+    end
+  end
+  table.sort(keys)
+  return table.concat(keys, ",")
+end
+
+local function load_channel_overrides()
+  custom_angle_channels = split_words(GetVariable("custom_angle_channels"))
+  blocked_angle_channels = split_words(GetVariable("blocked_angle_channels"))
+end
+
+local function save_channel_overrides()
+  SetVariable("custom_angle_channels", join_keys(custom_angle_channels))
+  SetVariable("blocked_angle_channels", join_keys(blocked_angle_channels))
+end
+
+local function is_angle_channel(channel_name)
+  channel_name = (channel_name or ""):lower()
+  if blocked_angle_channels[channel_name] then
+    return false
+  end
+  return angle_bracket_channels[channel_name] or custom_angle_channels[channel_name]
+end
 
 -- Play bell sound on incoming tell (0 = off, 1 = on)
-bell_on_tell = 0
+bell_on_tell = tonumber(GetVariable("bell_on_tell")) or 0
 
 -- Enable logging (0 = off, 1 = on)
-log_messages = 1
+log_messages = tonumber(GetVariable("log_messages")) or 1
 
 -- Logs directory relative to MUSHclient install
 log_directory = "ZombieMush\\Logs\\"
@@ -142,264 +352,1274 @@ log_directory = "ZombieMush\\Logs\\"
 -- Time zone offset from zombiemud server in seconds
 zombie_time_zone_offset = 21600
 
+-- ==================== MINIWINDOW CONFIGURATION ====================
+
+local CH_WIN = "msg_router_channels_" .. GetPluginID()
+local TE_WIN = "msg_router_tells_" .. GetPluginID()
+
+local DEFAULT_WIN_WIDTH    = 800
+local DEFAULT_VISIBLE_ROWS = 20
+local MIN_WIN_WIDTH        = 260
+local MAX_WIN_WIDTH        = 1600
+local MIN_VISIBLE_ROWS     = 5
+local MAX_VISIBLE_ROWS     = 80
+local RESIZE_TAG_SIZE      = 12
+local SCROLL_LINES         = 1
+local SCROLL_DRAG_REFRESH  = 0.033
+
+local win_metrics = {}          -- per-window {font_h, width, height, visible_rows, title_h}
+local resize_state = {}
+local scrollbar_drag_state = {}
+local last_scroll_repaint = 0
+
+local FONT_ID   = "f"
+local FONT_NAME = "Consolas"
+local FONT_SIZE = 9
+
+local MAX_STORED = 200   -- raw messages kept in each buffer
+local TEXT_INSET = 3
+local SCROLLBAR_W = 8    -- pixels wide for the scrollbar track
+
+local COLOR_BG         = ColourNameToRGB("black")
+local COLOR_BORDER     = ColourNameToRGB("gray")
+local COLOR_TITLE      = ColourNameToRGB("cyan")
+local COLOR_SCROLL     = ColourNameToRGB("dimgray")
+local COLOR_THUMB      = ColourNameToRGB("silver")
+local COLOR_THUMB_HOT  = ColourNameToRGB("white")
+local COLOR_SELECT_BG  = ColourNameToRGB("#1a3a5a")  -- row selection highlight
+local COLOR_DEFAULT_TEXT = ColourNameToRGB("white")
+local COLOR_TELL_IN    = ColourNameToRGB("lightskyblue")
+local COLOR_TELL_OUT   = ColourNameToRGB("lightgreen")
+
+-- Line buffers: each entry is a styles table (array of {text, textcolour, backcolour})
+local ch_lines = {}
+local te_lines = {}
+
+-- Pre-expanded visual row caches — updated incrementally on each new message, reused on every scroll tick
+local ch_visual_rows = {}
+local te_visual_rows = {}
+
+-- Parallel row-count tables: row_counts[i] = number of visual rows that lines[i] produced.
+-- Used to trim the exact right number of rows from the front of the cache when the oldest
+-- stored message is evicted because MAX_STORED is reached.
+local ch_row_counts = {}
+local te_row_counts = {}
+
+-- Scroll offsets: 0 = showing newest (bottom); positive = scrolled up into history
+local ch_scroll = 0
+local te_scroll = 0
+
+-- Row selection state: start_row/end_row are absolute indices into the visual row cache.
+-- Selection is cleared when a new message arrives (scroll snaps to newest).
+-- Row-level granularity only; sub-row character selection is not supported by the miniwindow API.
+local ch_sel = { active = false, start_row = nil, end_row = nil }
+local te_sel = { active = false, start_row = nil, end_row = nil }
+
+-- Last row seen during a drag, per window. Only redraw when the drag crosses into a new row —
+-- the dragmove callback fires at mouse polling rate (125-1000/sec) so this eliminates ~95% of
+-- redundant redraws while the mouse stays within the same font-height band.
+local ch_last_drag_row = nil
+local te_last_drag_row = nil
+
 -- ==================== INITIALIZATION ====================
 
 -- Prepend with full directory structure
 log_directory = GetInfo(57) .. log_directory
 
-if log_messages == 1 then
-  -- Create the log directory
-  os.execute('mkdir "' .. log_directory .. '"')
-  -- Turn \ into / for lua file reading
-  log_directory = log_directory:gsub("\\", "/")
-  log_directory = log_directory .. os.date("%y_%b_")
+-- Turn \ into / for lua file reading
+log_directory = log_directory:gsub("\\", "/")
+-- Store base directory (without month suffix) for dynamic month updates
+log_directory_base = log_directory
+
+-- Track the last directory we actually created so we only spawn mkdir once per month
+local log_directory_created = ""
+
+-- ==================== HELPER FUNCTIONS ====================
+
+load_channel_overrides()
+
+-- Get current log directory prefix for the current month.
+-- Files are written as: {log_directory_base}{YY_Mon_}active_{channel}.txt
+-- The month prefix is part of the filename, not a subdirectory.
+-- log_directory_created caches the last-seen month so this is O(1) after the first call per month.
+function get_log_directory()
+  if log_messages ~= 1 then return "" end
+  local dir = log_directory_base .. os.date("%y_%b_")
+  log_directory_created = dir
+  return dir
 end
 
-local first_time_tells = true
-local first_time_channels = true
+local function clamp(value, low, high)
+  value = tonumber(value) or low
+  if value < low then return low end
+  if value > high then return high end
+  return value
+end
+
+local function window_var(win_id, suffix)
+  return "msg_router_" .. win_id .. "_" .. suffix
+end
+
+local function window_height(font_h, visible_rows)
+  return (visible_rows + 1) * font_h + TEXT_INSET * 2
+end
+
+local function rows_from_height(font_h, height)
+  return clamp(math.floor(((tonumber(height) or 0) - TEXT_INSET * 2) / font_h) - 1,
+               MIN_VISIBLE_ROWS, MAX_VISIBLE_ROWS)
+end
+
+local function clear_table(t)
+  for k, _ in pairs(t) do
+    t[k] = nil
+  end
+end
+
+local function cache_tables_for_window(win_id)
+  if win_id == CH_WIN then
+    return ch_lines, ch_visual_rows, ch_row_counts, ch_sel
+  end
+  return te_lines, te_visual_rows, te_row_counts, te_sel
+end
+
+local function clear_selection(win_id)
+  if win_id == CH_WIN then
+    ch_sel = { active = false, start_row = nil, end_row = nil }
+    ch_last_drag_row = nil
+  else
+    te_sel = { active = false, start_row = nil, end_row = nil }
+    te_last_drag_row = nil
+  end
+end
+
+local function max_scroll_for_window(win_id)
+  local m = win_metrics[win_id]
+  local rows = (win_id == CH_WIN) and ch_visual_rows or te_visual_rows
+  if not m then return 0 end
+  return math.max(0, #rows - m.visible_rows)
+end
+
+local function current_scroll(win_id)
+  return (win_id == CH_WIN) and ch_scroll or te_scroll
+end
+
+local function mouse_y_in_window(win_id)
+  local client_y = WindowInfo(win_id, 18)
+  local window_top = WindowInfo(win_id, 11)
+  if client_y and window_top then
+    return client_y - window_top
+  end
+  return WindowInfo(win_id, 15)
+end
+
+local function set_current_scroll(win_id, value)
+  value = math.max(0, math.min(value, max_scroll_for_window(win_id)))
+  if win_id == CH_WIN then
+    ch_scroll = value
+  else
+    te_scroll = value
+  end
+  return value
+end
+
+local function visual_rows_for_window(win_id)
+  return (win_id == CH_WIN) and ch_visual_rows or te_visual_rows
+end
+
+local function buffered_repaint(force)
+  local now = utils.timer()
+  if force or now - last_scroll_repaint >= SCROLL_DRAG_REFRESH then
+    Repaint()
+    last_scroll_repaint = now
+  end
+end
+
+local function redraw_message_window(win_id, repaint_mode)
+  if win_id == CH_WIN then
+    redraw_window(CH_WIN, "[ Channels ]", ch_visual_rows, ch_scroll)
+  else
+    redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
+  end
+  if repaint_mode then
+    buffered_repaint(repaint_mode == "force")
+  end
+end
+
+local function scrollbar_geometry(win_id)
+  local m = win_metrics[win_id]
+  if not m then return nil end
+  local left = m.width - SCROLLBAR_W - 1
+  local right = m.width - 1
+  local top = m.title_h
+  local bottom = math.max(top + 1, m.height - RESIZE_TAG_SIZE - 1)
+  return left, right, top, bottom
+end
+
+local function scrollbar_thumb_rect(win_id)
+  local m = win_metrics[win_id]
+  if not m then return nil end
+  local rows = visual_rows_for_window(win_id)
+  local total = #rows
+  local max_scroll = max_scroll_for_window(win_id)
+  local left, right, top, bottom = scrollbar_geometry(win_id)
+  if not left then return nil end
+
+  if total <= m.visible_rows or max_scroll <= 0 then
+    return left, right, top, bottom, top, bottom, bottom - top
+  end
+
+  local track_h = bottom - top
+  local thumb_h = math.max(10, math.floor(track_h * m.visible_rows / total))
+  thumb_h = math.min(thumb_h, track_h)
+  local travel = math.max(1, track_h - thumb_h)
+  local thumb_frac = 1 - (current_scroll(win_id) / max_scroll)
+  local thumb_top = top + math.floor(travel * thumb_frac)
+  return left, right, top, bottom, thumb_top, thumb_top + thumb_h, thumb_h
+end
+
+local function save_window_size(win_id)
+  local m = win_metrics[win_id]
+  if not m then return end
+  SetVariable(window_var(win_id, "width"), tostring(m.width))
+  SetVariable(window_var(win_id, "rows"), tostring(m.visible_rows))
+end
+
+local function rebuild_visual_cache(win_id)
+  local lines, visual_rows, row_counts = cache_tables_for_window(win_id)
+  clear_table(visual_rows)
+  clear_table(row_counts)
+
+  for _, styles in ipairs(lines) do
+    local rows = wrap_styles(win_id, styles)
+    row_counts[#row_counts + 1] = #rows
+    for _, row in ipairs(rows) do
+      visual_rows[#visual_rows + 1] = row
+    end
+  end
+
+  clear_selection(win_id)
+  set_current_scroll(win_id, current_scroll(win_id))
+end
+
+local function move_resize_hotspot(win_id)
+  local m = win_metrics[win_id]
+  if not m then return end
+  local id = win_id .. "_resize"
+  local left = math.max(0, m.width - RESIZE_TAG_SIZE)
+  local top = math.max(m.title_h, m.height - RESIZE_TAG_SIZE)
+  if WindowMoveHotspot(win_id, id, left, top, m.width, m.height) ~= 0 then
+    local s = win_id == CH_WIN and "ch" or "te"
+    WindowAddHotspot(win_id, id,
+                     left, top, m.width, m.height,
+                     "", "",
+                     "on_resize_down_" .. s,
+                     "",
+                     "",
+                     "Drag to resize",
+                     miniwin.cursor_hand, 0)
+    WindowDragHandler(win_id, id,
+                      "on_resize_drag_" .. s,
+                      "on_resize_release_" .. s, 0)
+  end
+end
+
+local function move_title_hotspot(win_id)
+  local m = win_metrics[win_id]
+  if not m then return end
+  WindowMoveHotspot(win_id, "zz_mw_" .. win_id .. "_movewindow_hotspot",
+                    0, 0, m.width, m.title_h)
+end
+
+local function move_content_hotspot(win_id)
+  local m = win_metrics[win_id]
+  if not m then return end
+  WindowMoveHotspot(win_id, win_id .. "_scroll",
+                    0, m.title_h, m.width - SCROLLBAR_W - 2, m.height - 1)
+end
+
+local function move_scrollbar_hotspot(win_id)
+  local left, right, top, bottom = scrollbar_geometry(win_id)
+  if not left then return end
+  local id = win_id .. "_scrollbar"
+  if WindowMoveHotspot(win_id, id, left, top, right, bottom) ~= 0 then
+    local s = win_id == CH_WIN and "ch" or "te"
+    WindowAddHotspot(win_id, id,
+                     left, top, right, bottom,
+                     "", "",
+                     "on_scrollbar_down_" .. s,
+                     "",
+                     "on_scrollbar_up_" .. s,
+                     "Drag scrollbar to scroll history",
+                     miniwin.cursor_hand, 0)
+    WindowDragHandler(win_id, id,
+                      "on_scrollbar_drag_" .. s,
+                      "on_scrollbar_release_" .. s, 0)
+    WindowScrollwheelHandler(win_id, id, "on_scroll_" .. s)
+  end
+end
+
+local function draw_resize_tag(win_id)
+  local m = win_metrics[win_id]
+  if not m then return end
+  local right = m.width - 3
+  local bottom = m.height - 3
+  local color = ColourNameToRGB("gray")
+  WindowLine(win_id, right - 9, bottom, right, bottom - 9, color, miniwin.pen_solid, 1)
+  WindowLine(win_id, right - 5, bottom, right, bottom - 5, color, miniwin.pen_solid, 1)
+end
+
+local function resize_message_window(win_id, width, visible_rows, save_now)
+  local m = win_metrics[win_id]
+  if not m then return end
+
+  m.width = clamp(width, MIN_WIN_WIDTH, MAX_WIN_WIDTH)
+  m.visible_rows = clamp(visible_rows, MIN_VISIBLE_ROWS, MAX_VISIBLE_ROWS)
+  m.height = window_height(m.font_h, m.visible_rows)
+
+  WindowResize(win_id, m.width, m.height, COLOR_BG)
+  move_title_hotspot(win_id)
+  move_content_hotspot(win_id)
+  move_scrollbar_hotspot(win_id)
+  move_resize_hotspot(win_id)
+  rebuild_visual_cache(win_id)
+  if save_now then
+    save_window_size(win_id)
+  end
+
+  if win_id == CH_WIN then
+    redraw_window(CH_WIN, "[ Channels ]", ch_visual_rows, ch_scroll)
+  else
+    redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
+  end
+  if WindowInfo(win_id, 5) then
+    WindowShow(win_id, true)
+  end
+end
+
+local function scroll_window(win_id, amount)
+  local previous = current_scroll(win_id)
+  local new_scroll = set_current_scroll(win_id, previous + amount)
+  if new_scroll ~= previous then
+    redraw_message_window(win_id, true)
+  end
+end
+
+local function scroll_to_thumb_top(win_id, thumb_top, draw_now)
+  local left, right, track_top, track_bottom, old_thumb_top, old_thumb_bottom, thumb_h = scrollbar_thumb_rect(win_id)
+  if not left then return false end
+  local max_scroll = max_scroll_for_window(win_id)
+  if max_scroll <= 0 then return false end
+
+  local travel = math.max(1, (track_bottom - track_top) - thumb_h)
+  local clamped_top = clamp(thumb_top, track_top, track_top + travel)
+  local frac = (clamped_top - track_top) / travel
+  local wanted_scroll = math.floor((1 - frac) * max_scroll + 0.5)
+  local previous = current_scroll(win_id)
+  local new_scroll = set_current_scroll(win_id, wanted_scroll)
+  if new_scroll ~= previous and draw_now ~= false then
+    redraw_message_window(win_id, true)
+  end
+  return new_scroll ~= previous
+end
+
+local function begin_scrollbar_drag(win_id)
+  local left, right, track_top, track_bottom, thumb_top, thumb_bottom, thumb_h = scrollbar_thumb_rect(win_id)
+  if not left then return end
+  boost_window(win_id)
+
+  local y = mouse_y_in_window(win_id)
+  local offset
+  if y >= thumb_top and y <= thumb_bottom then
+    offset = y - thumb_top
+  else
+    offset = math.floor(thumb_h / 2)
+  end
+
+  scrollbar_drag_state[win_id] = { offset = offset, last_refresh = 0, dirty = false }
+  if scroll_to_thumb_top(win_id, y - offset, true) then
+    scrollbar_drag_state[win_id].last_refresh = utils.timer()
+  end
+end
+
+local function drag_scrollbar(win_id, force)
+  local state = scrollbar_drag_state[win_id]
+  if not state then return end
+  local y = mouse_y_in_window(win_id)
+  local changed = scroll_to_thumb_top(win_id, y - state.offset, false)
+  state.dirty = state.dirty or changed
+
+  local now = utils.timer()
+  if force or (state.dirty and now - state.last_refresh >= SCROLL_DRAG_REFRESH) then
+    redraw_message_window(win_id, force and "force" or true)
+    state.last_refresh = now
+    state.dirty = false
+  end
+end
+
+local function finish_scrollbar_drag(win_id)
+  if not scrollbar_drag_state[win_id] then return end
+  drag_scrollbar(win_id, false)
+  scrollbar_drag_state[win_id] = nil
+  redraw_message_window(win_id, "force")
+end
+
+local function begin_resize(win_id)
+  local m = win_metrics[win_id]
+  if not m then return end
+  boost_window(win_id)
+  resize_state[win_id] = {
+    left = WindowInfo(win_id, 10),
+    top = WindowInfo(win_id, 11),
+    last_refresh = 0
+  }
+end
+
+local function drag_resize(win_id, force)
+  local state = resize_state[win_id]
+  local m = win_metrics[win_id]
+  if not state or not m then return end
+
+  local now = utils.timer()
+  if not force and now - state.last_refresh < 0.033 then
+    return
+  end
+  state.last_refresh = now
+
+  local new_width = WindowInfo(win_id, 17) - state.left
+  local new_height = WindowInfo(win_id, 18) - state.top
+  resize_message_window(win_id, new_width, rows_from_height(m.font_h, new_height), false)
+end
+
+local function finish_resize(win_id)
+  drag_resize(win_id, true)
+  resize_state[win_id] = nil
+  save_window_size(win_id)
+end
+
+-- ==================== MINIWINDOW HELPERS ====================
+
+function init_window(win_id, title, default_pos)
+  local info = movewindow.install(win_id, default_pos, 0, false)
+  local saved_width = tonumber(GetVariable(window_var(win_id, "width"))) or DEFAULT_WIN_WIDTH
+  local saved_rows = tonumber(GetVariable(window_var(win_id, "rows"))) or DEFAULT_VISIBLE_ROWS
+  local start_width = clamp(saved_width, MIN_WIN_WIDTH, MAX_WIN_WIDTH)
+  local start_rows = clamp(saved_rows, MIN_VISIBLE_ROWS, MAX_VISIBLE_ROWS)
+  -- Create with placeholder height first so WindowFont can be registered
+  WindowCreate(win_id,
+               info.window_left, info.window_top,
+               start_width, window_height(FONT_SIZE + 4, start_rows),
+               info.window_mode, info.window_flags,
+               COLOR_BG)
+  WindowFont(win_id, FONT_ID, FONT_NAME, FONT_SIZE, false, false, false, false)
+  -- Now compute the real fixed height and resize once at init time only.
+  -- Cache font metrics so redraws do not repeatedly ask MUSHclient for them.
+  local font_h = WindowFontInfo(win_id, FONT_ID, 1)
+  local visible_rows = start_rows
+  local height = window_height(font_h, visible_rows)
+  win_metrics[win_id] = {
+    font_h = font_h,
+    width = start_width,
+    height = height,
+    visible_rows = visible_rows,
+    title_h = font_h + TEXT_INSET * 2
+  }
+  WindowResize(win_id, start_width, height, COLOR_BG)
+  local title_h = font_h + TEXT_INSET * 2
+  movewindow.add_drag_handler(win_id, 0, 0, start_width, title_h)
+
+  -- Content hotspot: covers the area BELOW the title bar.
+  -- Handles scroll wheel, left-click-drag selection, and right-click copy.
+  local s = win_id == CH_WIN and "ch" or "te"
+  WindowAddHotspot(win_id, win_id .. "_scroll",
+                   0, title_h, start_width - SCROLLBAR_W - 2, height - 1,
+                   "", "",
+                   "on_sel_down_" .. s,   -- mousedown: start selection (left) or ignore (right)
+                   "",
+                   "on_sel_up_" .. s,     -- mouseup: right-click copies selection
+                   "Wheel: scroll | Click-drag: select rows | Right-click: copy selection",
+                   miniwin.cursor_ibeam, 0)
+  WindowScrollwheelHandler(win_id, win_id .. "_scroll", "on_scroll_" .. s)
+  -- Drag handler fires during left-button drag; separate from scroll wheel
+  WindowDragHandler(win_id, win_id .. "_scroll",
+                    "on_sel_drag_" .. s,
+                    "on_sel_release_" .. s, 0)
+  move_content_hotspot(win_id)
+  move_scrollbar_hotspot(win_id)
+  move_resize_hotspot(win_id)
+
+  redraw_window(win_id, title, {}, 0)
+end
+
+register_with_window_manager = function(win_id)
+  if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+    CallPlugin(ZOMBIE_WINDOW_MANAGER_ID, "registerMiniwindow", win_id)
+  end
+end
+
+boost_window = function(win_id)
+  if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+    CallPlugin(ZOMBIE_WINDOW_MANAGER_ID, "boostMe", win_id)
+  end
+end
+
+local function style_text_colour(seg)
+  return seg.textcolour or seg.textcolor or seg.forecolour or seg.foreground or COLOR_DEFAULT_TEXT
+end
+
+local function styles_are_plain(styles)
+  local seen_colour = nil
+  for _, seg in ipairs(styles or {}) do
+    local colour = style_text_colour(seg)
+    if colour ~= COLOR_DEFAULT_TEXT then
+      return false
+    end
+    seen_colour = colour
+  end
+  return seen_colour ~= nil
+end
+
+local function tint_plain_styles(styles, colour)
+  if not styles_are_plain(styles) then
+    return styles
+  end
+
+  local tinted = {}
+  for _, seg in ipairs(styles) do
+    tinted[#tinted + 1] = {
+      text = seg.text or "",
+      textcolour = colour,
+      backcolour = seg.backcolour,
+      style = seg.style,
+      length = seg.length,
+    }
+  end
+  return tinted
+end
+
+-- Wrap a single message (array of styled segments) into visual rows.
+-- Returns a list of rows, each row being a list of {text, textcolour, backcolour} chunks.
+function wrap_styles(win_id, styles)
+  local m      = win_metrics[win_id]
+  local width  = m and m.width or DEFAULT_WIN_WIDTH
+  local max_w  = width - TEXT_INSET * 2 - SCROLLBAR_W - 2
+  local rows   = {}
+  local cur_row = {}
+  local cur_x   = 0
+
+  for _, seg in ipairs(styles) do
+    local colour = style_text_colour(seg)
+    local backcolour = seg.backcolour
+    local text   = seg.text or ""
+
+    -- Split segment into words, preserving spacing
+    -- We iterate through space-delimited tokens but keep leading spaces attached
+    local pos = 1
+    while pos <= #text do
+      -- Find next word (including any leading spaces)
+      local word_start = pos
+      -- Skip spaces first (they stay with the preceding word end / start of segment)
+      local spaces = text:match("^%s*", pos)
+      pos = pos + #spaces
+      if pos > #text then
+        -- Only spaces remaining - attach to current row
+        if #spaces > 0 then
+          local sw = WindowTextWidth(win_id, FONT_ID, spaces)
+          if cur_x + sw > max_w and cur_x > 0 then
+            rows[#rows + 1] = cur_row
+            cur_row = {}
+            cur_x = 0
+          else
+            cur_row[#cur_row + 1] = { text = spaces, textcolour = colour, backcolour = backcolour }
+            cur_x = cur_x + sw
+          end
+        end
+        break
+      end
+      -- Find end of word (up to next space or end of text)
+      local word_end = text:find("%s", pos)
+      local word
+      if word_end then
+        word = text:sub(pos, word_end - 1)
+        pos = word_end
+      else
+        word = text:sub(pos)
+        pos = #text + 1
+      end
+      local full_token = spaces .. word
+      local tw = WindowTextWidth(win_id, FONT_ID, full_token)
+
+      if cur_x + tw > max_w and cur_x > 0 then
+        -- Wrap: start new row (drop leading spaces that caused the wrap)
+        rows[#rows + 1] = cur_row
+        cur_row = {}
+        cur_x = 0
+        -- Re-measure just the word without leading spaces
+        local ww = WindowTextWidth(win_id, FONT_ID, word)
+        cur_row[#cur_row + 1] = { text = word, textcolour = colour, backcolour = backcolour }
+        cur_x = ww
+      else
+        cur_row[#cur_row + 1] = { text = full_token, textcolour = colour, backcolour = backcolour }
+        cur_x = cur_x + tw
+      end
+    end
+  end
+
+  if #cur_row > 0 then
+    rows[#rows + 1] = cur_row
+  end
+
+  -- Always return at least one (possibly empty) row
+  if #rows == 0 then rows[1] = {} end
+  return rows
+end
+
+-- all_rows must be a pre-expanded table of wrapped visual rows (from the incremental cache).
+-- The cache is updated in add_line (new message only, not a full rebuild). Never call wrap_styles here.
+-- Uses cached font metrics from init, so redraws avoid repeated WindowFontInfo calls.
+function redraw_window(win_id, title, all_rows, scroll_offset)
+  local m = win_metrics[win_id]
+  if not m then return end
+  local width = m.width
+  local h = m.height
+  local FONT_H = m.font_h
+  local visible_rows = m.visible_rows
+  local total = #all_rows
+
+  -- Clamp scroll offset
+  local max_scroll = math.max(0, total - visible_rows)
+  scroll_offset = math.max(0, math.min(scroll_offset, max_scroll))
+
+  -- Compute the visible range: show the current row count ending at (total - scroll_offset)
+  local bottom = total - scroll_offset
+  local top    = math.max(1, bottom - visible_rows + 1)
+
+  -- Clear background
+  WindowRectOp(win_id, miniwin.rect_fill, 0, 0, width, h, COLOR_BG)
+
+  -- Border
+  WindowRectOp(win_id, miniwin.rect_frame, 0, 0, width, h, COLOR_BORDER)
+
+  -- Title bar with optional scroll indicator
+  local display_title = title
+  if scroll_offset > 0 then
+    display_title = title .. "  ^ " .. scroll_offset .. " rows above"
+  end
+  WindowText(win_id, FONT_ID, display_title, TEXT_INSET, TEXT_INSET,
+             width - SCROLLBAR_W - TEXT_INSET, 0, COLOR_TITLE)
+
+  -- Render visible rows directly from all_rows (no intermediate display table)
+  local text_right = width - SCROLLBAR_W - TEXT_INSET
+  local sel = win_id == CH_WIN and ch_sel or te_sel
+  local sel_lo, sel_hi
+  if sel.active and sel.start_row and sel.end_row then
+    sel_lo = math.min(sel.start_row, sel.end_row)
+    sel_hi = math.max(sel.start_row, sel.end_row)
+  end
+  local row_num = 0
+  for i = top, bottom do
+    row_num = row_num + 1
+    local y = row_num * FONT_H + TEXT_INSET
+    local x = TEXT_INSET
+    -- Draw selection highlight background before text
+    if sel_lo and i >= sel_lo and i <= sel_hi then
+      WindowRectOp(win_id, miniwin.rect_fill,
+                   TEXT_INSET, y, text_right, y + FONT_H,
+                   COLOR_SELECT_BG)
+    end
+    local row = all_rows[i]
+    for _, chunk in ipairs(row) do
+      local chunk_w = WindowTextWidth(win_id, FONT_ID, chunk.text)
+      if chunk.backcolour and chunk.backcolour ~= COLOR_BG then
+        WindowRectOp(win_id, miniwin.rect_fill,
+                     x, y, math.min(text_right, x + chunk_w), y + FONT_H,
+                     chunk.backcolour)
+      end
+      local w = WindowText(win_id, FONT_ID, chunk.text,
+                           x, y,
+                           text_right, y + FONT_H,
+                           chunk.textcolour)
+      x = x + w
+    end
+  end
+
+  -- Draw scrollbar (right edge, below the title bar and above the resize handle)
+  local sb_left, sb_right, sb_top, sb_bot, thumb_top, thumb_bot = scrollbar_thumb_rect(win_id)
+  if sb_left then
+    WindowRectOp(win_id, miniwin.rect_fill, sb_left, sb_top, sb_right, sb_bot, COLOR_SCROLL)
+    if total > visible_rows then
+      local thumb_color = scrollbar_drag_state[win_id] and COLOR_THUMB_HOT or COLOR_THUMB
+      WindowRectOp(win_id, miniwin.rect_fill,
+                   sb_left, thumb_top,
+                   sb_right, thumb_bot,
+                   thumb_color)
+    end
+  end
+  draw_resize_tag(win_id)
+  -- No WindowShow here - window stays visible from init; calling it repeatedly triggers OS repaints
+end
+
+function add_line(buf, styles)
+  -- Identify which window, cache, and count-table we're updating
+  local win_id, vis_rows, row_counts
+  if buf == ch_lines then
+    win_id     = CH_WIN
+    vis_rows   = ch_visual_rows
+    row_counts = ch_row_counts
+  else
+    win_id     = TE_WIN
+    vis_rows   = te_visual_rows
+    row_counts = te_row_counts
+  end
+
+  -- Evict oldest message when buffer is full: trim exactly its row count from the front of the cache
+  if #buf >= MAX_STORED then
+    table.remove(buf, 1)
+    local evict = table.remove(row_counts, 1) or 0
+    for _ = 1, evict do
+      table.remove(vis_rows, 1)
+    end
+  end
+
+  -- Wrap only the new message and append its rows to the cache (O(new-message) not O(all-messages))
+  table.insert(buf, styles)
+  local new_rows = wrap_styles(win_id, styles)
+  table.insert(row_counts, #new_rows)
+  for _, row in ipairs(new_rows) do
+    vis_rows[#vis_rows + 1] = row
+  end
+
+  -- Snap to newest and clear any selection (selected row indices are now stale)
+  if buf == ch_lines then
+    ch_scroll = 0
+    ch_sel = { active = false, start_row = nil, end_row = nil }
+    ch_last_drag_row = nil
+  else
+    te_scroll = 0
+    te_sel = { active = false, start_row = nil, end_row = nil }
+    te_last_drag_row = nil
+  end
+end
+
+function toggle_msg_windows()
+  local ch_vis = WindowInfo(CH_WIN, 5)
+  local te_vis = WindowInfo(TE_WIN, 5)
+  -- Hide all if any visible; show all only if both are hidden
+  local show = not (ch_vis or te_vis)
+  WindowShow(CH_WIN, show)
+  WindowShow(TE_WIN, show)
+end
+
+function set_logging(name, line, wildcards)
+  local setting = wildcards[1]
+  if setting == "on" then
+    log_messages = 1
+  elseif setting == "off" then
+    log_messages = 0
+  end
+  SetVariable("log_messages", tostring(log_messages))
+  ColourNote((log_messages == 1) and "lime" or "yellow", "", "Message Router logging is " .. ((log_messages == 1) and "ON" or "OFF") .. ".")
+end
+
+function set_bell(name, line, wildcards)
+  local setting = wildcards[1]
+  if setting == "on" then
+    bell_on_tell = 1
+  elseif setting == "off" then
+    bell_on_tell = 0
+  end
+  SetVariable("bell_on_tell", tostring(bell_on_tell))
+  ColourNote((bell_on_tell == 1) and "lime" or "yellow", "", "Tell bell sound is " .. ((bell_on_tell == 1) and "ON" or "OFF") .. ".")
+end
+
+function allow_angle_channel(name, line, wildcards)
+  local channel = wildcards[1]:lower()
+  custom_angle_channels[channel] = true
+  blocked_angle_channels[channel] = nil
+  save_channel_overrides()
+  ColourNote("lime", "", "Message Router will treat <" .. channel .. "> as a channel.")
+end
+
+function block_angle_channel(name, line, wildcards)
+  local channel = wildcards[1]:lower()
+  custom_angle_channels[channel] = nil
+  blocked_angle_channels[channel] = true
+  save_channel_overrides()
+  ColourNote("yellow", "", "Message Router will not treat <" .. channel .. "> as a channel.")
+end
+
+function unblock_angle_channel(name, line, wildcards)
+  local channel = wildcards[1]:lower()
+  blocked_angle_channels[channel] = nil
+  save_channel_overrides()
+  ColourNote("lime", "", "Removed the custom block for <" .. channel .. ">.")
+end
+
+function list_channel_overrides()
+  print("")
+  ColourNote("paleturquoise", "", "Message Router channel overrides:")
+  local allowed = join_keys(custom_angle_channels)
+  local blocked = join_keys(blocked_angle_channels)
+  ColourNote("khaki", "", "  Custom allowed: " .. ((allowed ~= "") and allowed or "(none)"))
+  ColourNote("khaki", "", "  Custom blocked: " .. ((blocked ~= "") and blocked or "(none)"))
+  print("")
+end
+
+function reset_window_positions()
+  -- Read current positions of the two windows
+  local ch_x = WindowInfo(CH_WIN, 10)  -- left edge
+  local ch_y = WindowInfo(CH_WIN, 11)  -- top edge
+  local te_x = WindowInfo(TE_WIN, 10)
+  local te_y = WindowInfo(TE_WIN, 11)
+
+  -- Swap the Y positions (keep X the same), move immediately
+  WindowPosition(CH_WIN, ch_x, te_y, 0, miniwin.create_absolute_location)
+  WindowPosition(TE_WIN, te_x, ch_y, 0, miniwin.create_absolute_location)
+
+  -- Update the saved variables to match the new positions so they survive reload
+  SetVariable("mw_" .. CH_WIN .. "_windowx", tostring(ch_x))
+  SetVariable("mw_" .. CH_WIN .. "_windowy", tostring(te_y))
+  SetVariable("mw_" .. CH_WIN .. "_windowflags", "2")
+  SetVariable("mw_" .. TE_WIN .. "_windowx", tostring(te_x))
+  SetVariable("mw_" .. TE_WIN .. "_windowy", tostring(ch_y))
+  SetVariable("mw_" .. TE_WIN .. "_windowflags", "2")
+
+  ColourNote("cyan", "", "Message Router: windows swapped. Tells=top, Channels=bottom.")
+  register_with_window_manager(CH_WIN)
+  register_with_window_manager(TE_WIN)
+end
+
+function set_window_size(name, line, wildcards)
+  local target = wildcards[1]
+  local width = tonumber(wildcards[2])
+  local rows = tonumber(wildcards[3])
+
+  if target == "channels" or target == "both" then
+    resize_message_window(CH_WIN, width, rows, true)
+  end
+  if target == "tells" or target == "both" then
+    resize_message_window(TE_WIN, width, rows, true)
+  end
+
+  ColourNote("lime", "", "Message Router: resized " .. target .. " to " ..
+             clamp(width, MIN_WIN_WIDTH, MAX_WIN_WIDTH) .. " px wide and " ..
+             clamp(rows, MIN_VISIBLE_ROWS, MAX_VISIBLE_ROWS) .. " visible rows.")
+end
+
+-- Scroll wheel callbacks (global names required by WindowScrollwheelHandler)
+-- Use pre-cached visual rows — no expand_to_rows here, so scrolling is instant.
+function on_scroll_ch(flags, hotspot_id)
+  if bit.band(flags, 0x100) ~= 0 then
+    scroll_window(CH_WIN, -SCROLL_LINES)
+  else
+    scroll_window(CH_WIN, SCROLL_LINES)
+  end
+end
+
+function on_scroll_te(flags, hotspot_id)
+  if bit.band(flags, 0x100) ~= 0 then
+    scroll_window(TE_WIN, -SCROLL_LINES)
+  else
+    scroll_window(TE_WIN, SCROLL_LINES)
+  end
+end
+
+function on_scrollbar_down_ch(flags, id)
+  begin_scrollbar_drag(CH_WIN)
+end
+
+function on_scrollbar_drag_ch(flags, id)
+  drag_scrollbar(CH_WIN)
+end
+
+function on_scrollbar_release_ch(flags, id)
+  finish_scrollbar_drag(CH_WIN)
+end
+
+function on_scrollbar_up_ch(flags, id)
+  finish_scrollbar_drag(CH_WIN)
+end
+
+function on_scrollbar_down_te(flags, id)
+  begin_scrollbar_drag(TE_WIN)
+end
+
+function on_scrollbar_drag_te(flags, id)
+  drag_scrollbar(TE_WIN)
+end
+
+function on_scrollbar_release_te(flags, id)
+  finish_scrollbar_drag(TE_WIN)
+end
+
+function on_scrollbar_up_te(flags, id)
+  finish_scrollbar_drag(TE_WIN)
+end
+
+-- ==================== SELECTION HELPERS ====================
+
+-- Map a pixel Y within win_id to an absolute index into the visual row cache.
+-- Returns nil if the Y is in the title bar or outside the content area.
+-- WindowInfo(win, 14/15) returns cursor X/Y within the window (confirmed from movewindow.lua).
+local function y_to_abs_row(win_id, y)
+  local m = win_metrics[win_id]
+  if not m then return nil end
+  local vis_rows = win_id == CH_WIN and ch_visual_rows or te_visual_rows
+  local scroll   = win_id == CH_WIN and ch_scroll       or te_scroll
+  local total    = #vis_rows
+  local visible_rows = m.visible_rows
+
+  -- row_in_view: 0 = title bar area, 1..visible_rows = content rows
+  local row_in_view = math.floor((y - TEXT_INSET) / m.font_h)
+  if row_in_view < 1 or row_in_view > visible_rows then return nil end
+
+  local max_scroll = math.max(0, total - visible_rows)
+  local clamped    = math.max(0, math.min(scroll, max_scroll))
+  local bottom     = total - clamped
+  local top        = math.max(1, bottom - visible_rows + 1)
+
+  local abs = top + (row_in_view - 1)
+  if abs < 1 or abs > total then return nil end
+  return abs
+end
+
+-- Build plain text from a contiguous range of visual rows.
+local function extract_selection_text(vis_rows, r1, r2)
+  local lo = math.min(r1, r2)
+  local hi = math.max(r1, r2)
+  local lines = {}
+  for i = lo, hi do
+    if vis_rows[i] then
+      local parts = {}
+      for _, chunk in ipairs(vis_rows[i]) do
+        parts[#parts + 1] = chunk.text
+      end
+      lines[#lines + 1] = table.concat(parts)
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+-- Copy the current selection in win_id to the clipboard.
+local function copy_win_selection(win_id)
+  local sel = win_id == CH_WIN and ch_sel or te_sel
+  local vis = win_id == CH_WIN and ch_visual_rows or te_visual_rows
+  if not sel.active or not sel.start_row or not sel.end_row then
+    ColourNote("yellow", "", "[Message Router] No text selected — click-drag to select rows first.")
+    return
+  end
+  local text  = extract_selection_text(vis, sel.start_row, sel.end_row)
+  local count = math.abs(sel.end_row - sel.start_row) + 1
+  local ok, err = pcall(SetClipboard, text)
+  if ok then
+    ColourNote("cyan", "", "[Message Router] Copied " .. count .. " line(s) to clipboard.")
+  else
+    ColourNote("red", "", "[Message Router] Copy failed: " .. tostring(err))
+  end
+end
+
+-- ==================== SELECTION CALLBACKS ====================
+-- All callbacks must be global functions (WindowDragHandler / WindowAddHotspot requirement).
+-- WindowInfo(win, 14) = cursor X within window; WindowInfo(win, 15) = cursor Y within window.
+
+function on_resize_down_ch(flags, id)
+  begin_resize(CH_WIN)
+end
+
+function on_resize_drag_ch(flags, id)
+  drag_resize(CH_WIN)
+end
+
+function on_resize_release_ch(flags, id)
+  finish_resize(CH_WIN)
+end
+
+function on_resize_down_te(flags, id)
+  begin_resize(TE_WIN)
+end
+
+function on_resize_drag_te(flags, id)
+  drag_resize(TE_WIN)
+end
+
+function on_resize_release_te(flags, id)
+  finish_resize(TE_WIN)
+end
+
+function on_sel_down_ch(flags, id)
+  if bit.band(flags, miniwin.hotspot_got_rh_mouse) ~= 0 then return end
+  boost_window(CH_WIN)
+  ch_last_drag_row = nil  -- reset so first drag tick always redraws
+  local row = y_to_abs_row(CH_WIN, WindowInfo(CH_WIN, 15))
+  if row then
+    ch_sel = { active = true, start_row = row, end_row = row }
+    redraw_window(CH_WIN, "[ Channels ]", ch_visual_rows, ch_scroll)
+  end
+end
+
+function on_sel_up_ch(flags, id)
+  if bit.band(flags, miniwin.hotspot_got_rh_mouse) ~= 0 then
+    boost_window(CH_WIN)
+    copy_win_selection(CH_WIN)
+  end
+end
+
+function on_sel_drag_ch(flags, id)
+  if not ch_sel.active then return end
+  local row = y_to_abs_row(CH_WIN, WindowInfo(CH_WIN, 15))
+  if row and row ~= ch_last_drag_row then
+    ch_last_drag_row = row
+    ch_sel.end_row = row
+    redraw_window(CH_WIN, "[ Channels ]", ch_visual_rows, ch_scroll)
+  end
+end
+
+function on_sel_release_ch(flags, id)
+  -- Selection already finalised by drag updates; nothing extra needed.
+end
+
+function on_sel_down_te(flags, id)
+  if bit.band(flags, miniwin.hotspot_got_rh_mouse) ~= 0 then return end
+  boost_window(TE_WIN)
+  te_last_drag_row = nil  -- reset so first drag tick always redraws
+  local row = y_to_abs_row(TE_WIN, WindowInfo(TE_WIN, 15))
+  if row then
+    te_sel = { active = true, start_row = row, end_row = row }
+    redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
+  end
+end
+
+function on_sel_up_te(flags, id)
+  if bit.band(flags, miniwin.hotspot_got_rh_mouse) ~= 0 then
+    boost_window(TE_WIN)
+    copy_win_selection(TE_WIN)
+  end
+end
+
+function on_sel_drag_te(flags, id)
+  if not te_sel.active then return end
+  local row = y_to_abs_row(TE_WIN, WindowInfo(TE_WIN, 15))
+  if row and row ~= te_last_drag_row then
+    te_last_drag_row = row
+    te_sel.end_row = row
+    redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
+  end
+end
+
+function on_sel_release_te(flags, id)
+  -- Selection already finalised by drag updates; nothing extra needed.
+end
 
 -- ==================== ROUTING FUNCTIONS ====================
 
 function route_channel(name, line, wildcards, styles)
-  line = os.date("%c ") .. line
+  -- If wildcards[2] exists, it means the pattern with player name matched (channel is in [2])
+  -- Otherwise, the pattern without player name matched (channel is in [1])
+  local channel_name = (wildcards[2] or wildcards[1]):lower()
 
-  -- Try to find "channels" world
-  local w = GetWorld(channels_world)
-
-  -- If not found, try to open it
-  if first_time_channels and not w then
-    local filename = GetInfo(67) .. channels_world .. ".mcl"
-    Open(filename)
-    w = GetWorld(channels_world)
-    if not w then
-      ColourNote("white", "red", "Can't open channels world file: " .. filename)
-      first_time_channels = false
-    end
-  end
-
-  if w then
-    -- Log the channel message
-    if log_messages == 1 then
-      local channel_name = wildcards[1]
-      local f = io.open(log_directory .. "active_" .. channel_name .. ".txt", "a")
-      if f then
-        f:write(line .. "\n")
-        f:close()
-      end
-    end
-
-    -- Send to channels window
-    for _, v in ipairs(styles) do
-      w:ColourTell(RGBColourToName(v.textcolour),
+  -- Check if angle brackets are used - if so, verify channel is in whitelist
+  if line:match("<" .. channel_name .. ">") then
+    if not is_angle_channel(channel_name) then
+      -- Not a valid channel, re-output the line normally
+      for _, v in ipairs(styles) do
+        ColourTell(RGBColourToName(v.textcolour),
                    RGBColourToName(v.backcolour),
                    v.text)
+      end
+      Note("")
+      return
     end
-    w:Note("")
   end
+
+  -- Log the channel message
+  -- Skip logging for btest channel (not sent to Discord)
+  if log_messages == 1 and channel_name ~= "btest" then
+    local dir = get_log_directory()
+    local f = io.open(dir .. "active_" .. channel_name .. ".txt", "a")
+    if f then
+      f:write(line .. "\n")
+      f:close()
+    end
+  end
+
+  -- Send to channels miniwindow
+  add_line(ch_lines, styles)
+  redraw_window(CH_WIN, "[ Channels ]", ch_visual_rows, ch_scroll)
 end
 
 function last_route_channel(name, line, wildcards, styles)
-  -- Try to find "channels" world
-  local w = GetWorld(channels_world)
+  -- Pattern has player name in [1] and channel name in [2]
+  local channel_name = (wildcards[2] or wildcards[1]):lower()
 
-  -- If not found, try to open it
-  if first_time_channels and not w then
-    local filename = GetInfo(67) .. channels_world .. ".mcl"
-    Open(filename)
-    w = GetWorld(channels_world)
-    if not w then
-      ColourNote("white", "red", "Can't open channels world file: " .. filename)
-      first_time_channels = false
-    end
-  end
-
-  if w then
-    -- Log to last log with deduplication
-    if log_messages == 1 then
-      local channel_name = wildcards[1]
-      local last_log_file = log_directory .. "last_" .. channel_name .. ".txt"
-
-      local a = io.open(last_log_file, "a")
-      local f = io.input(last_log_file)
-      local all = f:read("*a")
-      f:close()
-
-      -- Add timestamp if needed
-      local line_to_write
-      if not line:find("^%w+%s%d+%s.*$") then
-        local now = os.time()
-        line_to_write = os.date("%b %d", now + zombie_time_zone_offset) .. " " .. line
-      else
-        line_to_write = line
-      end
-
-      -- Deduplicate: only write if not already in file
-      if all == nil then
-        a:write(line_to_write .. "\n")
-      elseif not all:find(line_to_write, 0, true) then
-        a:write(line_to_write .. "\n")
-      end
-      a:close()
-    end
-
-    -- Send to channels window
-    for _, v in ipairs(styles) do
-      w:ColourTell(RGBColourToName(v.textcolour),
+  -- Check if angle brackets are used - if so, verify channel is in whitelist
+  if line:match("<" .. channel_name .. ">") then
+    if not is_angle_channel(channel_name) then
+      -- Not a valid channel, re-output the line normally
+      for _, v in ipairs(styles) do
+        ColourTell(RGBColourToName(v.textcolour),
                    RGBColourToName(v.backcolour),
                    v.text)
+      end
+      Note("")
+      return
     end
-    w:Note("")
   end
+
+  -- Log to last log with deduplication
+  -- Skip logging for btest channel (not sent to Discord)
+  if log_messages == 1 and channel_name ~= "btest" then
+    local dir = get_log_directory()
+    local last_log_file = dir .. "last_" .. channel_name .. ".txt"
+
+    local all = ""
+    local f = io.open(last_log_file, "r")
+    if f then
+      all = f:read("*a") or ""
+      f:close()
+    end
+
+    -- Add timestamp if needed
+    local line_to_write
+    if not line:find("^%w+%s%d+%s.*$") then
+      local now = os.time()
+      line_to_write = os.date("%b %d", now + zombie_time_zone_offset) .. " " .. line
+    else
+      line_to_write = line
+    end
+
+    -- Deduplicate: only write if not already in file
+    if all == "" or not all:find(line_to_write, 0, true) then
+      local a = io.open(last_log_file, "a")
+      if a then
+        a:write(line_to_write .. "\n")
+        a:close()
+      end
+    end
+  end
+
+  -- Send to channels miniwindow
+  add_line(ch_lines, styles)
+  redraw_window(CH_WIN, "[ Channels ]", ch_visual_rows, ch_scroll)
 end
 
 function route_tell_incoming(name, line, wildcards, styles)
-  line = os.date("%c ") .. line
-
   -- Play bell if configured
   if bell_on_tell == 1 then
     Sound("ding.wav")
   end
 
-  -- Try to find "tells" world
-  local w = GetWorld(tells_world)
-
-  -- If not found, try to open it
-  if first_time_tells and not w then
-    local filename = GetInfo(67) .. tells_world .. ".mcl"
-    Open(filename)
-    w = GetWorld(tells_world)
-    if not w then
-      ColourNote("white", "red", "Can't open tells world file: " .. filename)
-      first_time_tells = false
+  -- Log the tell (without timestamp for Discord compatibility)
+  if log_messages == 1 then
+    local dir = get_log_directory()
+    local f = io.open(dir .. "active_tells.txt", "a")
+    if f then
+      f:write(line .. "\n")
+      f:close()
     end
   end
 
-  if w then
-    -- Log the tell
-    if log_messages == 1 then
-      local f = io.open(log_directory .. "active_tells.txt", "a")
-      if f then
-        f:write(line .. "\n")
-        f:close()
-      end
-    end
-
-    -- Send to tells window
-    for _, v in ipairs(styles) do
-      w:ColourTell(RGBColourToName(v.textcolour),
-                   RGBColourToName(v.backcolour),
-                   v.text)
-    end
-    w:Note("")
-  end
+  -- Send to tells miniwindow
+  add_line(te_lines, tint_plain_styles(styles, COLOR_TELL_IN))
+  redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
 end
 
 function route_tell_outgoing(name, line, wildcards, styles)
-  line = os.date("%c ") .. line
-
-  -- Try to find "tells" world
-  local w = GetWorld(tells_world)
-
-  -- If not found, try to open it
-  if first_time_tells and not w then
-    local filename = GetInfo(67) .. tells_world .. ".mcl"
-    Open(filename)
-    w = GetWorld(tells_world)
-    if not w then
-      ColourNote("white", "red", "Can't open tells world file: " .. filename)
-      first_time_tells = false
+  -- Log the tell (without timestamp for Discord compatibility)
+  if log_messages == 1 then
+    local dir = get_log_directory()
+    local f = io.open(dir .. "active_tells.txt", "a")
+    if f then
+      f:write(line .. "\n")
+      f:close()
     end
   end
 
-  if w then
-    -- Log the tell
-    if log_messages == 1 then
-      local f = io.open(log_directory .. "active_tells.txt", "a")
-      if f then
-        f:write(line .. "\n")
-        f:close()
-      end
-    end
-
-    -- Send to tells window
-    for _, v in ipairs(styles) do
-      w:ColourTell(RGBColourToName(v.textcolour),
-                   RGBColourToName(v.backcolour),
-                   v.text)
-    end
-    w:Note("")
-  end
+  -- Send to tells miniwindow
+  add_line(te_lines, tint_plain_styles(styles, COLOR_TELL_OUT))
+  redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
 end
 
 function last_route_tell(name, line, wildcards, styles)
-  -- Try to find "tells" world
-  local w = GetWorld(tells_world)
+  -- Log to last log with deduplication
+  if log_messages == 1 then
+    local dir = get_log_directory()
+    local last_log_file = dir .. "last_tells.txt"
 
-  -- If not found, try to open it
-  if first_time_tells and not w then
-    local filename = GetInfo(67) .. tells_world .. ".mcl"
-    Open(filename)
-    w = GetWorld(tells_world)
-    if not w then
-      ColourNote("white", "red", "Can't open tells world file: " .. filename)
-      first_time_tells = false
-    end
-  end
-
-  if w then
-    -- Log to last log with deduplication
-    if log_messages == 1 then
-      local last_log_file = log_directory .. "last_tells.txt"
-
-      local a = io.open(last_log_file, "a")
-      local f = io.input(last_log_file)
-      local all = f:read("*a")
+    local all = ""
+    local f = io.open(last_log_file, "r")
+    if f then
+      all = f:read("*a") or ""
       f:close()
-
-      -- Add timestamp if needed
-      local line_to_write
-      if not line:find("^%w+%s%d+%s.*$") then
-        local now = os.time()
-        line_to_write = os.date("%b %d", now + zombie_time_zone_offset) .. " " .. line
-      else
-        line_to_write = line
-      end
-
-      -- Deduplicate: only write if not already in file
-      if all == nil then
-        a:write(line_to_write .. "\n")
-      elseif not all:find(line_to_write, 0, true) then
-        a:write(line_to_write .. "\n")
-      end
-      a:close()
     end
 
-    -- Send to tells window
-    for _, v in ipairs(styles) do
-      w:ColourTell(RGBColourToName(v.textcolour),
-                   RGBColourToName(v.backcolour),
-                   v.text)
+    -- Add timestamp if needed
+    local line_to_write
+    if not line:find("^%w+%s%d+%s.*$") then
+      local now = os.time()
+      line_to_write = os.date("%b %d", now + zombie_time_zone_offset) .. " " .. line
+    else
+      line_to_write = line
     end
-    w:Note("")
+
+    -- Deduplicate: only write if not already in file
+    if all == "" or not all:find(line_to_write, 0, true) then
+      local a = io.open(last_log_file, "a")
+      if a then
+        a:write(line_to_write .. "\n")
+        a:close()
+      end
+    end
   end
+
+  -- Send to tells miniwindow
+  add_line(te_lines, tint_plain_styles(styles, COLOR_TELL_IN))
+  redraw_window(TE_WIN, "[ Tells ]", te_visual_rows, te_scroll)
 end
 
 -- ==================== PLUGIN EVENTS ====================
 
 function OnPluginInstall()
-  ColourNote("cyan", "", "Message Router v2.0 loaded")
-  ColourNote("cyan", "", "Routing tells → " .. tells_world .. ".mcl")
-  ColourNote("cyan", "", "Routing channels → " .. channels_world .. ".mcl")
+  init_window(TE_WIN, "[ Tells ]",    miniwin.pos_top_right)
+  init_window(CH_WIN, "[ Channels ]", miniwin.pos_bottom_right)
+  register_with_window_manager(TE_WIN)
+  register_with_window_manager(CH_WIN)
+  if IsPluginInstalled("94925710eda2ee22c3a5fd4a") and GetPluginVariable("94925710eda2ee22c3a5fd4a", "startup_mode") == "verbose" then
+    ColourNote("cyan", "", "Message Router v3.6 loaded - buffered scroll repaint and tell colour fallback")
+    ColourNote("cyan", "", "Channels window: top-right  |  Tells window: bottom-right")
+    ColourNote("cyan", "", "Drag the lower-right corner to resize, or use: msgsize channels|tells|both width rows")
+    ColourNote("cyan", "", "Type 'msgwin' to toggle both windows on/off")
 
-  if log_messages == 1 then
-    ColourNote("green", "", "Logging enabled: " .. log_directory)
-  else
-    ColourNote("yellow", "", "Logging disabled")
-  end
+    if log_messages == 1 then
+      ColourNote("green", "", "Logging enabled: " .. get_log_directory())
+    else
+      ColourNote("yellow", "", "Logging disabled")
+    end
 
-  if bell_on_tell == 1 then
-    ColourNote("green", "", "Bell sound on incoming tells: ENABLED")
+    if bell_on_tell == 1 then
+      ColourNote("green", "", "Bell sound on incoming tells: ENABLED")
+    end
   end
+end
+
+function OnPluginSaveState()
+  SetVariable("log_messages", tostring(log_messages))
+  SetVariable("bell_on_tell", tostring(bell_on_tell))
+  save_channel_overrides()
+  save_window_size(CH_WIN)
+  save_window_size(TE_WIN)
+  movewindow.save_state(CH_WIN)
+  movewindow.save_state(TE_WIN)
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+  if id == ZOMBIE_WINDOW_MANAGER_ID and msg == 996 and text == "re-register z" then
+    register_with_window_manager(TE_WIN)
+    register_with_window_manager(CH_WIN)
+  end
+end
+
+function OnPluginClose()
+  WindowShow(CH_WIN, false)
+  WindowShow(TE_WIN, false)
 end
 
 ]]>

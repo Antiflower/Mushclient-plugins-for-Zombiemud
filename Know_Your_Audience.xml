@@ -1,0 +1,393 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="Know_Your_Audience"
+   author="Claude"
+   id="a1b2c3d4e5f6a7b8c9d0e1f5"
+   language="Lua"
+   purpose="Reports know your audience results to party with resistance levels"
+   save_state="y"
+   date_written="2025-01-27"
+   requires="4.00"
+   version="1.0"
+   >
+<description trim="y">
+<![CDATA[
+Know Your Audience parser for ZombieMUD.
+
+Automatically parses "know your audience" spell results and reports to party:
+- Target health percentage
+- Weaknesses (most/least resisted damage types)
+- Resistance levels grouped by vulnerability (1-8 scale)
+
+Resistance levels:
+  1 of 8 - completely vulnerable
+  2 of 8 - very vulnerable
+  3 of 8 - vulnerable
+  4 of 8 - susceptible
+  5 of 8 - somewhat susceptible
+  6 of 8 - barely susceptible
+  7 of 8 - immune
+  8 of 8 - invulnerable
+]]>
+</description>
+</plugin>
+
+<!-- ==================== TRIGGERS ==================== -->
+
+<triggers>
+
+  <trigger
+   name="KnowYourAudienceStart"
+   enabled="y"
+   ignore_case="y"
+   match="*'s gender is:*"
+   regexp="n"
+   script="StartKnowYourAudience"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+    <trigger
+     name="KnowYourAudienceHealth"
+     enabled="y"
+     match="*The target is at about *% health."
+     regexp="n"
+     script="CaptureKnowYourAudienceHealth"
+     send_to="12"
+     sequence="99"
+    >
+    </trigger>
+
+  <trigger
+   name="KnowYourAudienceResist"
+   enabled="y"
+   ignore_case="y"
+   match="* is * to *."
+   regexp="n"
+   script="CaptureKnowYourAudienceResist"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+   <trigger
+    name="KnowYourAudienceMostLeast"
+    enabled="y"
+    match="*resists the damage type * the *."
+    regexp="n"
+    script="CaptureKnowYourAudienceMostLeast"
+    send_to="12"
+    sequence="100"
+   >
+   </trigger>
+
+  <trigger
+   name="KnowYourAudienceEnd"
+   enabled="n"
+   ignore_case="y"
+   match="* is *."
+   regexp="n"
+   script="EndKnowYourAudience"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+</triggers>
+
+<!-- ==================== SCRIPT ==================== -->
+
+<script>
+<![CDATA[
+
+-- ==================== KNOW YOUR AUDIENCE SYSTEM ====================
+
+-- Storage for know your audience data
+know_your_audience_data = know_your_audience_data or {
+  target_name = nil,
+  health_percent = nil,
+  resistances = {},
+  most_resist = nil,
+  least_resist = nil,
+  collecting = false
+}
+
+-- Mapping of resistance descriptions to numeric levels (1-8)
+local resistance_levels = {
+  ["completely vulnerable"] = 1,
+  ["very vulnerable"] = 2,
+  ["vulnerable"] = 3,
+  ["susceptible"] = 4,
+  ["somewhat susceptible"] = 5,
+  ["barely susceptible"] = 6,
+  ["immune"] = 7,
+  ["invulnerable"] = 8
+}
+
+-- Damage type abbreviations
+local damage_type_abbrev = {
+  ["magical"] = "MAG",
+  ["magic"] = "MAG",
+  ["acid"] = "ACID",
+  ["psionic"] = "PSI",
+  ["electric"] = "ELEC",
+  ["physical"] = "PHYS",
+  ["fire"] = "FIRE",
+  ["cold"] = "COLD",
+  ["poison"] = "POIS",
+  ["asphyxiation"] = "ASPHYX"
+}
+
+function StartKnowYourAudience(name, line, wildcards)
+  -- Extract target name from line like "Rune golem's gender is:" or "Dart's gender is: neuter"
+  -- or "Off-duty guard's gender is:" or "O'Brien's gender is:"
+  -- Pattern: match everything up to the last "'s gender is:" to handle names with apostrophes
+  local target_name = string.match(line, "^(.+)'s gender is:")
+  if target_name then
+    know_your_audience_data.target_name = target_name:match("^%s*(.-)%s*$")  -- trim whitespace
+    know_your_audience_data.health_percent = nil
+    know_your_audience_data.resistances = {}
+    know_your_audience_data.most_resist = nil
+    know_your_audience_data.least_resist = nil
+    know_your_audience_data.collecting = true
+    EnableTrigger("KnowYourAudienceEnd", true)
+  end
+end
+
+function CaptureKnowYourAudienceHealth(name, line, wildcards)
+  -- Only process if we're collecting
+  if not know_your_audience_data.collecting then
+    return
+  end
+  
+  -- Pattern: "*The target is at about *% health."
+  -- wildcards[1] = leading spaces, wildcards[2] = health percentage (e.g., "99%")
+  local health = nil
+  if wildcards and wildcards[2] then
+    -- Remove % sign and convert to number
+    health = tonumber(string.match(wildcards[2], "(%d+)"))
+    if health then
+      know_your_audience_data.health_percent = health
+      return
+    end
+  end
+  
+  -- Fallback: extract from line directly
+  health = string.match(line, "about (%d+)%%")
+  if health then
+    know_your_audience_data.health_percent = tonumber(health)
+  end
+end
+
+function CaptureKnowYourAudienceResist(name, line, wildcards)
+  if not know_your_audience_data.collecting then
+    return
+  end
+  
+  -- Parse lines like "Rune golem is barely susceptible to acid."
+  -- or "O'Brien is barely susceptible to acid."
+  -- Pattern: match name (which may contain special chars), then " is ", then resistance level, then " to ", then damage type
+  -- Use a more flexible pattern that handles names with special characters
+  local pattern = " is (.+) to (.+)%."
+  local level_desc, damage_type = string.match(line, pattern)
+  
+  if level_desc and damage_type then
+    level_desc = level_desc:lower():match("^%s*(.-)%s*$")  -- trim and lowercase
+    damage_type = damage_type:lower():match("^%s*(.-)%s*$")  -- trim and lowercase
+    
+    local level = resistance_levels[level_desc]
+    if level then
+      know_your_audience_data.resistances[damage_type] = level
+    end
+  end
+end
+
+function CaptureKnowYourAudienceMostLeast(name, line, wildcards)
+  if not know_your_audience_data.collecting then
+    return
+  end
+  
+  -- Parse lines like "       resists the damage type physical the most."
+  -- Pattern: "*resists the damage type * the *."
+  -- wildcards[1] = leading spaces, wildcards[2] = damage type, wildcards[3] = most/least
+  if wildcards and wildcards[2] and wildcards[3] then
+    local damage_type = string.lower(string.match(wildcards[2], "^%s*(.-)%s*$"))  -- trim
+    local most_or_least = string.lower(string.match(wildcards[3], "^%s*(.-)%s*$"))  -- trim
+    
+    if most_or_least == "most" then
+      know_your_audience_data.most_resist = damage_type
+    elseif most_or_least == "least" then
+      know_your_audience_data.least_resist = damage_type
+    end
+  else
+    -- Fallback to regex matching
+    local damage_type, most_or_least = string.match(line, "damage type (%w+) the (%w+)%.")
+    if damage_type and most_or_least then
+      damage_type = damage_type:lower()
+      most_or_least = most_or_least:lower()
+      
+      if most_or_least == "most" then
+        know_your_audience_data.most_resist = damage_type
+      elseif most_or_least == "least" then
+        know_your_audience_data.least_resist = damage_type
+      end
+    end
+  end
+end
+
+function EndKnowYourAudience(name, line, wildcards)
+  if not know_your_audience_data.collecting then
+    return
+  end
+  
+  -- Check if this is the alignment line (last line of know your audience)
+  -- Pattern like "Rune golem is Neutral." or "Dart is Neutral." or "Off-duty guard is Neutral."
+  -- or "O'Brien is Neutral." or "Smith, John is Neutral."
+  local target_name = know_your_audience_data.target_name
+  if not target_name then
+    return
+  end
+  
+  -- Case-insensitive check for target name and alignment values
+  -- Plain text search handles special characters (hyphens, apostrophes, commas) correctly
+  local line_lower = string.lower(line)
+  local target_lower = string.lower(target_name)
+  
+  -- Check if line contains target name and " is " using plain text search
+  local has_target = string.find(line_lower, target_lower, 1, true)  -- plain text search (handles special chars)
+  local has_is = string.find(line_lower, " is ", 1, true)  -- plain text search
+  
+  if not has_target or not has_is then
+    return
+  end
+  
+  -- Check if it ends with one of the alignment values
+  local alignments = {
+    "angelic", "extremely good", "very good", "good", "slightly good", "neutral",
+    "slightly evil", "evil", "very evil", "extremely evil", "demonic"
+  }
+  
+  local is_alignment = false
+  for _, align in ipairs(alignments) do
+    if string.find(line_lower, " is " .. align .. "%.") then
+      is_alignment = true
+      break
+    end
+  end
+  
+  if is_alignment then
+    know_your_audience_data.collecting = false
+    EnableTrigger("KnowYourAudienceEnd", false)
+    ProcessKnowYourAudienceResults()
+  end
+end
+
+function ProcessKnowYourAudienceResults()
+  local data = know_your_audience_data
+  
+  if not data.target_name then
+    return
+  end
+  
+  -- Build resistance groups by level
+  local resist_by_level = {}
+  for damage_type, level in pairs(data.resistances) do
+    if not resist_by_level[level] then
+      resist_by_level[level] = {}
+    end
+    table.insert(resist_by_level[level], damage_type)
+  end
+  
+  -- Use scale of 8 as specified by user
+  local scale_max = 8
+  
+  -- Format target name (lowercase for consistency with example)
+  local target_display = string.lower(data.target_name)
+  
+  -- Build the summary message
+  local health_str = ""
+  if data.health_percent then
+    health_str = target_display .. "'s at " .. data.health_percent .. "%"
+  else
+    health_str = target_display
+  end
+  
+  local most_str = ""
+  local least_str = ""
+  if data.most_resist then
+    local abbrev = damage_type_abbrev[data.most_resist] or string.upper(data.most_resist:sub(1, 4))
+    most_str = "Most: " .. abbrev
+  end
+  if data.least_resist then
+    local abbrev = damage_type_abbrev[data.least_resist] or string.upper(data.least_resist:sub(1, 4))
+    least_str = "Least: " .. abbrev
+  end
+  
+  local summary_parts = {}
+  table.insert(summary_parts, health_str)
+  
+  if least_str ~= "" and most_str ~= "" then
+    table.insert(summary_parts, "Weaknesses: " .. least_str .. " - " .. most_str)
+  elseif least_str ~= "" then
+    table.insert(summary_parts, "Weaknesses: " .. least_str)
+  elseif most_str ~= "" then
+    table.insert(summary_parts, "Weaknesses: " .. most_str)
+  end
+  
+  -- Send summary line
+  if #summary_parts > 0 then
+    Execute("party say " .. table.concat(summary_parts, " - "))
+  end
+  
+  -- Send separator
+  Execute("party say " .. string.rep("=", 60))
+  
+  -- Send resistance groups sorted by level (lowest to highest)
+  local sorted_levels = {}
+  for level, _ in pairs(resist_by_level) do
+    table.insert(sorted_levels, level)
+  end
+  table.sort(sorted_levels)
+  
+  for _, level in ipairs(sorted_levels) do
+    local damage_types = resist_by_level[level]
+    local abbrevs = {}
+    for _, dt in ipairs(damage_types) do
+      local abbrev = damage_type_abbrev[dt] or string.upper(dt:sub(1, 4))
+      table.insert(abbrevs, abbrev)
+    end
+    table.sort(abbrevs)  -- Sort abbreviations alphabetically
+    
+    Execute("party say " .. level .. " of " .. scale_max .. " -  " .. table.concat(abbrevs, " "))
+  end
+  
+  -- Reset data
+  know_your_audience_data.target_name = nil
+  know_your_audience_data.health_percent = nil
+  know_your_audience_data.resistances = {}
+  know_your_audience_data.most_resist = nil
+  know_your_audience_data.least_resist = nil
+  know_your_audience_data.collecting = false
+end
+
+-- ==================== PLUGIN EVENTS ====================
+
+function OnPluginInstall()
+  -- Reset collecting state on reload so a mid-collection reload doesn't leave the end trigger enabled
+  know_your_audience_data.collecting = false
+  EnableTrigger("KnowYourAudienceEnd", false)
+
+  if IsPluginInstalled("94925710eda2ee22c3a5fd4a") and GetPluginVariable("94925710eda2ee22c3a5fd4a", "startup_mode") == "verbose" then
+    ColourNote("green", "", "Know Your Audience plugin v1.0 loaded")
+    ColourNote("cyan", "", "  - Automatically parses know your audience results")
+    ColourNote("cyan", "", "  - Reports to party with resistance levels (1-8 scale)")
+  end
+end
+
+]]>
+</script>
+
+</muclient>

@@ -1,70 +1,377 @@
-# Combat Handler + Buff tracker
-This contains a corpse handler plugin for use in zombiemud via MUSHclient. Plugin created with the help of Claude AI
+# ZombieMUD Core Lite for MUSHclient
 
-Download the plugin
-Go to File -> plugins -> add
-navigate to the folder containing the .XML file for the Corpse Handler plugin and select it
+ZombieMUD Core Lite is a small starter set of MUSHclient plugins for ZombieMUD.
 
-use the command: corpsemode <Mode> to change modes
+It is meant for players who want the most useful quality-of-life plugins without loading the full ZombieMUD plugin collection.
 
+Core Lite manages these plugins:
 
-NOTE: ALL MODES WILL ATTEMPT TO PUT NOEQ IN BAG AT EXECUTION UNLESS OTHERWISE STATED, SOME MODES WILL ATTEMPT TO GIVE NOEQ TO RANGER PET OR MULE BY NAME, PLEASE UPDATE THE PLUGIN WITH YOUR PET OR MULE'S NAME
+- `Message_Router.xml`
+- `Combat_Manager.xml`
+- `Know_Your_Audience.xml`
+- `simplestepper.xml`
 
-Current modes: 
+The manager plugin is:
 
-tin(tins corpse, gets can, eats can)
+- `ZombieMUD_Core_Lite.xml`
 
-collect: gets corpse, puts corpse in a carriage
+Core Lite does not replace the full `ZombieMUD_Core.xml`. It has a different plugin name, a different plugin ID, and its own command prefix: `zlite`.
 
-sdrain: uses the samurai command sdrain on a corpse
+## What It Does
 
-totem: uses the death knight skill vile totem at a corpse(if a totem exists in the room the script will default to the tin command to destroy the corpse, this requires a tinning kit, but you do not need to train 
-tinning to tin, only train tinning if you want to actually get cans to eat from the corpse)
+Core Lite helps you:
 
-ranger: gives all to kevin(you can open the file in an edit and search kevin to replace the name with your own ranger pet's), and say eat all to have ranger pet eat corpses, you can edit this to use beast speech at eat all by scrolling to the ranger section and just replacing the say portion with use beast at
+- Check whether the lite plugin set is loaded.
+- Load missing lite plugins.
+- Reload the lite plugin set without closing your world.
+- See the main commands for the included plugins.
+- Toggle background sound playback in MUSHclient.
 
-troll: gives all to ranger pet(name change needed), gets the corpse to your inventory so you can eat it later.
+It does not change ZombieMUD itself. It only runs inside MUSHclient.
 
-archer: tins corpse, gets can, eats can, puts noeq in bag, and puts all arrow in quiver.
+## Requirements
 
-none: Does nothing with corpses or loot(for parties where someone else needs to corpse)
+- MUSHclient 4.00 or newer.
+- The ZombieMUD plugin files in your MUSHclient plugins folder.
+- Lua scripting enabled in MUSHclient.
 
-This plugin also tracks combat needs such as vulnerability timers, and auto deletes timers when the target dies so you don't spawn party with vulns dropping on dead creatures, otherwise it will announce the vuln has dropped after 25 seconds.
+The expected plugin folder is usually:
 
-In addition it will also keep track of rounds and announce how many rounds a combat took upon the death of your target, this is in the form of a client note so only you see it.
+```text
+C:\Program Files (x86)\MUSHclient\worlds\plugins\Zombiemud Plugins
+```
 
+## Included Plugins
 
-Combined combat management plugin for ZombieMUD.
+### ZombieMUD Core Lite
 
-VULNERABILITY TRACKING:
-- Tracks all 9 vulnerability spell types
-- Auto-announces "Vuln Up" to party when cast
-- Auto-announces "Vuln Down" after 27 seconds
-- Cancels timers automatically on creature death
+File:
 
-ROUND COUNTER:
-- Tracks combat rounds from "NEW ROUND" messages
-- Displays total rounds when combat ends
-- Auto-resets on creature death
+```text
+ZombieMUD_Core_Lite.xml
+```
 
-CORPSE HANDLING:
-- Multiple modes: tin, drain, totem, collect, ranger, troll, archer, off
-- Automatic corpse processing on creature death
-- Totem mode with fallback to tinning if totem exists
-- Archer mode includes quiver storage for arrows/bolts
-- Ignores troll regeneration mobs (flesh pieces)
+This is the small manager plugin. It checks, loads, and reloads only the lite plugin set.
 
-Commands:
-  corpsemode [mode]  - Set corpse handling mode
-                       Valid: tin, drain, totem, collect, ranger, troll, archer, off
+Main commands:
 
-Vulnerability spells tracked:
-  - Physical (afflictus corpus)
-  - Fire (ardens amictus)
-  - Cold (aufero fervens)
-  - Electric (fulmen infractus)
-  - Psionic (ignavus animus)
-  - Asphyx (infirmus respiro)
-  - Acid (macilentus corium)
-  - Poison (macula valetudo)
-  - Magic (magus foramen)
+```text
+zlite
+zlite status
+zlite plugins check
+zlite plugins load
+zlite reload
+zlite reload list
+zlite sounds background
+```
+
+### Message Router
+
+File:
+
+```text
+Message_Router.xml
+```
+
+This routes ZombieMUD channels and tells into miniwindows.
+
+Useful commands:
+
+```text
+msgwin
+msgreset
+msgsize channels 800 20
+msgsize tells 800 20
+msgsize both 800 20
+msglog
+msglog on
+msglog off
+msgbell
+msgbell on
+msgbell off
+msgchannels
+```
+
+Notes:
+
+- `msgwin` shows or hides both message windows.
+- `msgsize` changes miniwindow width and visible row count.
+- The message windows can be dragged, resized, and scrolled.
+- Message logging writes files under the MUSHclient `ZombieMush\Logs` folder.
+
+### Combat Manager
+
+File:
+
+```text
+Combat_Manager.xml
+```
+
+This tracks useful combat events, including vulnerability timing, combat rounds, scan output, and corpse handling.
+
+Useful command:
+
+```text
+corpsemode <mode>
+```
+
+Examples:
+
+```text
+corpsemode off
+corpsemode bury
+corpsemode tin
+```
+
+Use `corpsemode off` if you do not want the plugin to send corpse-handling commands.
+
+### Know Your Audience
+
+File:
+
+```text
+Know_Your_Audience.xml
+```
+
+This watches the output from the `know your audience` spell and reports useful resistance information.
+
+There is no normal command to run. Cast the spell in-game, and the plugin watches the spell output automatically.
+
+It can report:
+
+- Target health percentage.
+- Damage types the target resists most.
+- Damage types the target resists least.
+- Resistance levels in an easier-to-read format.
+
+### SimpleStepper
+
+File:
+
+```text
+simplestepper.xml
+```
+
+This loads walking paths from a path file and lets you step through them one command at a time.
+
+Useful commands:
+
+```text
+- <pathname>
+.
+..
+```
+
+Examples:
+
+```text
+- town
+.
+..
+```
+
+What those commands mean:
+
+- `- town` loads a path named `town`.
+- `.` sends the next command in the loaded path.
+- `..` tries to step backward using the plugin's reverse-direction table.
+
+By default, SimpleStepper looks for paths here:
+
+```text
+C:/Program Files (x86)/MUSHclient/worlds/paths/paths.path
+```
+
+Each path line should look like this:
+
+```text
+town=n;e;e;s;w
+```
+
+## Installation
+
+1. Copy the plugin XML files into your ZombieMUD plugin folder.
+2. Open your ZombieMUD world in MUSHclient.
+3. Go to `File` -> `Plugins`.
+4. Click `Add`.
+5. Select `ZombieMUD_Core_Lite.xml`.
+6. Click `OK`.
+
+After loading Core Lite, type:
+
+```text
+zlite plugins load
+```
+
+That command tells Core Lite to try loading the four plugins it manages.
+
+## First Commands To Try
+
+After installation, try these in MUSHclient:
+
+```text
+zlite status
+zlite plugins load
+zlite reload
+```
+
+If the message windows are hidden, try:
+
+```text
+msgwin
+```
+
+If the message windows are too large or too small, try:
+
+```text
+msgsize both 800 20
+```
+
+## Reloading Plugins
+
+You do not need to close your world just to reload these plugins.
+
+Reload everything in the lite set:
+
+```text
+zlite reload
+```
+
+Reload one plugin:
+
+```text
+zlite reload messages
+zlite reload combat
+zlite reload audience
+zlite reload stepper
+```
+
+Show reload targets:
+
+```text
+zlite reload list
+```
+
+## Status Checks
+
+To see whether the lite plugins are loaded and enabled:
+
+```text
+zlite status
+```
+
+To check only plugin health:
+
+```text
+zlite plugins check
+```
+
+If something is missing, run:
+
+```text
+zlite plugins load
+```
+
+## Background Sounds
+
+MUSHclient can either play sounds only while it is focused, or keep playing sounds while it is in the background.
+
+Toggle that setting with:
+
+```text
+zlite sounds background
+```
+
+## Troubleshooting
+
+### Core Lite loaded, but other plugins are missing
+
+Run:
+
+```text
+zlite plugins load
+```
+
+If a plugin is still missing, make sure the XML file is in the same plugin folder as `ZombieMUD_Core_Lite.xml`.
+
+### Message windows do not show
+
+Try:
+
+```text
+msgwin
+```
+
+Then check:
+
+```text
+zlite status
+```
+
+### Message windows are the wrong size
+
+Try:
+
+```text
+msgsize both 800 20
+```
+
+You can change the numbers. The first number is width in pixels. The second number is visible rows.
+
+### SimpleStepper cannot find paths
+
+Make sure this file exists:
+
+```text
+C:/Program Files (x86)/MUSHclient/worlds/paths/paths.path
+```
+
+Then make sure it contains path lines like:
+
+```text
+town=n;e;e;s;w
+```
+
+### I edited a plugin and want MUSHclient to use the new version
+
+Run:
+
+```text
+zlite reload
+```
+
+Or reload only the plugin you changed:
+
+```text
+zlite reload messages
+zlite reload combat
+zlite reload audience
+zlite reload stepper
+```
+
+## Full Core vs Lite Core
+
+Use `ZombieMUD_Core_Lite.xml` if you only want:
+
+- Message windows.
+- Combat management.
+- Know Your Audience parsing.
+- SimpleStepper path walking.
+
+Use the full `ZombieMUD_Core.xml` if you want the larger ZombieMUD plugin set.
+
+The Lite Core uses `zlite` commands so it does not conflict with the full Core's `zombie` and `zreload` commands.
+
+## Files In The Lite Set
+
+```text
+ZombieMUD_Core_Lite.xml
+Message_Router.xml
+Combat_Manager.xml
+Know_Your_Audience.xml
+simplestepper.xml
+```
+
+## License
+
+No license has been selected yet. Add a license before publishing publicly if you want others to reuse or modify the plugins.
