@@ -13,7 +13,7 @@
    save_state="y"
    date_written="2025-11-28"
    requires="4.00"
-   version="1.1"
+   version="1.3"
    >
 <description trim="y">
 <![CDATA[
@@ -23,6 +23,7 @@ VULNERABILITY TRACKING:
 - Tracks all 9 vulnerability spell types
 - Auto-announces "Vuln Up" to party when cast
 - Auto-announces "Vuln Down" after 27 seconds
+- Vuln timer duration can be changed with vulntime [seconds]
 - Cancels timers automatically on creature death
 
 ROUND COUNTER:
@@ -40,8 +41,20 @@ CORPSE HANDLING:
 - Ignores troll regeneration mobs (flesh pieces)
 
 Commands:
+  cmhelp             - Show Combat Manager help
+  cmstatus           - Show corpse mode, round count, and vuln timers
+  corpsemode         - Show current corpse mode
+  corpsemode list    - Show corpse mode choices
   corpsemode [mode]  - Set corpse handling mode
-                       Valid: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off
+  vulnstatus         - Show active vulnerability timers
+  vulnclear          - Clear active vulnerability timers
+  vulntime           - Show current vulnerability timer duration
+  vulntime [seconds] - Set vulnerability timer duration
+  rounds             - Show current round count
+  roundreset         - Reset current round count
+  cmquiet            - Show quiet mode
+  cmquiet on/off     - Hide/show routine debug notes
+  docorpse           - Manually run current corpse mode
 
 Vulnerability spells tracked:
   - Physical (afflictus corpus)
@@ -64,12 +77,111 @@ Vulnerability spells tracked:
 
 <aliases>
   <alias
+   match="^cmhelp$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ShowCombatHelp"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^cmstatus$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ShowCombatStatus"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^corpsemode$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ShowCorpseMode"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^corpsemode\s+list$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ListCorpseModes"
+   sequence="90"
+  >
+  </alias>
+  <alias
    match="^corpsemode\s+(\S+)$"
    enabled="y"
    regexp="y"
    ignore_case="y"
    script="SetCorpseMode"
    sequence="100"
+  >
+  </alias>
+  <alias
+   match="^vulnstatus$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ShowVulnStatus"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^vulnclear$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ClearVulnStatus"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^vulntime(?:\s+(\d+))?$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="SetVulnDuration"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^rounds$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ShowRounds"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^roundreset$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="ResetRounds"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^cmquiet(?:\s+(on|off))?$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="SetQuietMode"
+   sequence="90"
+  >
+  </alias>
+  <alias
+   match="^docorpse$"
+   enabled="y"
+   regexp="y"
+   ignore_case="y"
+   script="DoCorpse"
+   sequence="90"
   >
   </alias>
 </aliases>
@@ -370,10 +482,37 @@ local spell_to_vuln = {
 -- Table to store active timer names
 active_timers = active_timers or {}
 timer_counter = timer_counter or 0
+local DEFAULT_VULN_DURATION = 27
+local MIN_VULN_DURATION = 5
+local MAX_VULN_DURATION = 120
 
 -- Track last attempted vuln so tumble handler knows which type failed
 pending_vuln_type = pending_vuln_type or nil
 pending_vuln_cancelled = pending_vuln_cancelled or false
+
+local function clamp(value, low, high)
+  value = tonumber(value) or low
+  if value < low then return low end
+  if value > high then return high end
+  return value
+end
+
+local function get_quiet_mode()
+  return GetVariable("quiet_mode") == "1"
+end
+
+local function routine_note(text)
+  if not get_quiet_mode() then
+    Note(text)
+  end
+end
+
+local function get_vuln_duration()
+  local duration = tonumber(GetVariable("vuln_duration")) or DEFAULT_VULN_DURATION
+  duration = clamp(duration, MIN_VULN_DURATION, MAX_VULN_DURATION)
+  SetVariable("vuln_duration", tostring(duration))
+  return duration
+end
 
 local function start_vuln_timer(vuln_type, party_message)
   CancelVulnTimers(vuln_type)
@@ -385,11 +524,11 @@ local function start_vuln_timer(vuln_type, party_message)
 
   timer_counter = timer_counter + 1
   local timer_name = "vuln_" .. vuln_type .. "_" .. timer_counter
-  AddTimer(timer_name, 0, 0, 27, "AnnounceVulnDown('" .. vuln_type .. "', '" .. timer_name .. "')", timer_flag.Enabled + timer_flag.OneShot, "")
+  AddTimer(timer_name, 0, 0, get_vuln_duration(), "AnnounceVulnDown('" .. vuln_type .. "', '" .. timer_name .. "')", timer_flag.Enabled + timer_flag.OneShot, "")
   SetTimerOption(timer_name, "send_to", "12")
   if not active_timers[vuln_type] then active_timers[vuln_type] = {} end
   table.insert(active_timers[vuln_type], timer_name)
-  Note("Started " .. vuln_type .. " vulnerability timer (" .. timer_name .. ")")
+  routine_note("Started " .. vuln_type .. " vulnerability timer (" .. timer_name .. ")")
 end
 
 function StartVuln(name, line, wildcards)
@@ -432,11 +571,11 @@ function CancelVulnTimers(vuln_type)
     for _, timer_name in ipairs(active_timers[vuln_type]) do
       local result = DeleteTimer(timer_name)
       if result == error_code.eOK then
-        Note("Cancelled timer: " .. timer_name)
+        routine_note("Cancelled timer: " .. timer_name)
       end
     end
     active_timers[vuln_type] = {}
-    Note("Cancelled all " .. vuln_type .. " vulnerability timers")
+    routine_note("Cancelled all " .. vuln_type .. " vulnerability timers")
   end
 end
 
@@ -452,7 +591,7 @@ function CancelAllVulnTimers()
     active_timers[vuln_type] = {}
   end
   if count > 0 then
-    Note("Cancelled " .. count .. " active vulnerability timer(s)")
+    routine_note("Cancelled " .. count .. " active vulnerability timer(s)")
   end
 end
 
@@ -579,6 +718,204 @@ local mode_commands = {
   off = {}  -- No commands
 }
 
+local mode_order = {
+  "tin", "mule", "disc", "drain", "totem", "collect",
+  "ranger", "troll", "archer", "necro", "barb", "parcher", "off"
+}
+
+local mode_notes = {
+  tin = "put loot in bag, tin corpse, eat can",
+  mule = "give loot to Kev, tin corpse, eat can",
+  disc = "put loot in disc, tin corpse",
+  drain = "pack shuriken, put loot in bag, sdrain corpse",
+  totem = "use vile totem; falls back to tin if a totem already exists",
+  collect = "bag loot, get corpse, put corpse in carriage",
+  ranger = "say eat all, give loot to Kevin",
+  troll = "give shuriken/loot away, get corpse",
+  archer = "tin corpse, eat can, move arrows into quiver",
+  necro = "give loot to servant, preserve corpse, scan frank",
+  barb = "bag loot, oscalp corpse, use ancestral rite",
+  parcher = "delayed arrow pickup and quiver storage",
+  off = "do nothing on corpse death"
+}
+
+local function join_words(words)
+  return table.concat(words, ", ")
+end
+
+local function timer_count_for(vuln_type)
+  local count = 0
+  for _, timer_name in ipairs(active_timers[vuln_type] or {}) do
+    if GetTimerInfo(timer_name, 1) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+local function active_vuln_summary()
+  local lines = {}
+  for vuln_type, timers in pairs(active_timers) do
+    local count = timer_count_for(vuln_type)
+    if count > 0 then
+      lines[#lines + 1] = vuln_type .. " (" .. count .. ")"
+    end
+  end
+  table.sort(lines)
+  return lines
+end
+
+local function print_mode_commands(mode)
+  local commands = mode_commands[mode] or {}
+  if #commands == 0 then
+    ColourNote("cyan", "", "  Commands on death: none")
+    return
+  end
+
+  ColourNote("cyan", "", "  Commands on death:")
+  for _, cmd in ipairs(commands) do
+    ColourNote("cyan", "", "    - " .. cmd)
+  end
+  if mode == "totem" then
+    ColourNote("cyan", "", "    note: falls back to tinning if a totem already exists")
+  elseif mode == "necro" then
+    ColourNote("cyan", "", "    note: scans frank and reports the result to party")
+  elseif mode == "parcher" then
+    ColourNote("cyan", "", "    note: commands run after a short delay")
+  end
+end
+
+function ShowCombatHelp()
+  print("")
+  ColourNote("lime", "", "Combat Manager help")
+  ColourNote("paleturquoise", "", "Status:")
+  ColourNote("khaki", "", "  cmstatus          - show corpse mode, round count, and active vuln timers")
+  ColourNote("khaki", "", "  cmquiet           - show quiet/debug note setting")
+  ColourNote("khaki", "", "  corpsemode        - show current corpse handling mode")
+  ColourNote("khaki", "", "  corpsemode list   - show all corpse mode choices")
+  ColourNote("khaki", "", "  vulnstatus        - show active vulnerability timers")
+  ColourNote("khaki", "", "  vulntime          - show vulnerability timer duration")
+  ColourNote("khaki", "", "  rounds            - show current combat round count")
+  ColourNote("paleturquoise", "", "Actions:")
+  ColourNote("khaki", "", "  cmquiet on/off    - hide/show routine debug notes")
+  ColourNote("khaki", "", "  corpsemode <mode> - change corpse handling")
+  ColourNote("khaki", "", "  docorpse          - manually run the current corpse mode")
+  ColourNote("khaki", "", "  vulnclear         - clear all active vulnerability timers")
+  ColourNote("khaki", "", "  vulntime <seconds>- set vulnerability timer duration")
+  ColourNote("khaki", "", "  roundreset        - reset the round counter")
+  ColourNote("yellow", "", "Tip: vulnerability timers are session-only and clear on death/reload.")
+  print("")
+end
+
+function ShowCorpseMode()
+  local mode = GetCurrentMode()
+  print("")
+  ColourNote("lime", "", "Combat Manager corpse mode")
+  ColourNote("khaki", "", "  Current mode: " .. mode)
+  ColourNote("khaki", "", "  Meaning: " .. (mode_notes[mode] or "(no description)"))
+  print_mode_commands(mode)
+  ColourNote("cyan", "", "Type 'corpsemode list' to see every mode.")
+  print("")
+end
+
+function ListCorpseModes()
+  print("")
+  ColourNote("lime", "", "Combat Manager corpse modes")
+  for _, mode in ipairs(mode_order) do
+    ColourNote("khaki", "", "  " .. mode .. " - " .. (mode_notes[mode] or ""))
+  end
+  print("")
+end
+
+function ShowVulnStatus()
+  print("")
+  ColourNote("lime", "", "Combat Manager vulnerability timers")
+  ColourNote("khaki", "", "  Duration: " .. get_vuln_duration() .. " seconds")
+  local active = active_vuln_summary()
+  if #active == 0 then
+    ColourNote("yellow", "", "  No active vulnerability timers.")
+  else
+    for _, text in ipairs(active) do
+      ColourNote("khaki", "", "  " .. text)
+    end
+  end
+  if pending_vuln_type then
+    ColourNote("cyan", "", "  Pending cast check: " .. pending_vuln_type)
+  end
+  print("")
+end
+
+function ClearVulnStatus()
+  CancelAllVulnTimers()
+  pending_vuln_type = nil
+  pending_vuln_cancelled = false
+  ColourNote("lime", "", "Combat Manager: vulnerability timers cleared.")
+end
+
+function ShowRounds()
+  ColourNote("lime", "", "Combat Manager: current round count is " .. round_counter .. ".")
+end
+
+function ResetRounds()
+  round_counter = 0
+  ColourNote("lime", "", "Combat Manager: round counter reset.")
+end
+
+function SetQuietMode(name, line, wildcards)
+  local setting = wildcards and wildcards[1] or nil
+  if setting == "on" then
+    SetVariable("quiet_mode", "1")
+  elseif setting == "off" then
+    SetVariable("quiet_mode", "0")
+  end
+
+  ColourNote(get_quiet_mode() and "yellow" or "lime", "", "Combat Manager quiet mode is " .. (get_quiet_mode() and "ON" or "OFF") .. ".")
+  if get_quiet_mode() then
+    ColourNote("cyan", "", "Routine timer start/cancel notes will be hidden.")
+  else
+    ColourNote("cyan", "", "Routine timer start/cancel notes will be shown.")
+  end
+end
+
+function SetVulnDuration(name, line, wildcards)
+  local wanted = tonumber(wildcards and wildcards[1])
+  if wanted then
+    local duration = clamp(wanted, MIN_VULN_DURATION, MAX_VULN_DURATION)
+    SetVariable("vuln_duration", tostring(duration))
+    if duration ~= wanted then
+      ColourNote("yellow", "", "Combat Manager: vuln duration was clamped to " .. duration .. " seconds.")
+    end
+  end
+  ColourNote("lime", "", "Combat Manager vuln timer duration: " .. get_vuln_duration() .. " seconds.")
+end
+
+function DoCorpse()
+  local mode = GetCurrentMode()
+  if mode == "off" then
+    ColourNote("yellow", "", "Combat Manager: corpse handling is off, so docorpse did nothing.")
+    return
+  end
+
+  ColourNote("cyan", "", "Combat Manager: manually running corpse mode '" .. mode .. "'.")
+  HandleCorpse()
+end
+
+function ShowCombatStatus()
+  print("")
+  ColourNote("lime", "", "Combat Manager status")
+  ColourNote("khaki", "", "  Corpse mode: " .. GetCurrentMode())
+  ColourNote("khaki", "", "  Quiet mode: " .. (get_quiet_mode() and "on" or "off"))
+  ColourNote("khaki", "", "  Vuln duration: " .. get_vuln_duration() .. " seconds")
+  ColourNote("khaki", "", "  Round count: " .. round_counter)
+  local active = active_vuln_summary()
+  ColourNote("khaki", "", "  Active vuln timers: " .. (#active > 0 and join_words(active) or "none"))
+  ColourNote("khaki", "", "  Pending vuln cast: " .. (pending_vuln_type or "none"))
+  ColourNote("khaki", "", "  Waiting for totem fallback: " .. (waiting_for_totem and "yes" or "no"))
+  ColourNote("khaki", "", "  Waiting for necro scan: " .. (waiting_for_scan and "yes" or "no"))
+  ColourNote("cyan", "", "Type 'cmhelp' for commands.")
+  print("")
+end
+
 function SetCorpseMode(name, line, wildcards)
   local mode = wildcards[1]:lower()
 
@@ -586,8 +923,9 @@ function SetCorpseMode(name, line, wildcards)
   mode = mode:match("^%s*(.-)%s*$")
 
   if not valid_modes[mode] then
-    Note("Invalid corpse mode. Valid modes are: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off")
-    Note("Current mode: " .. GetCurrentMode())
+    ColourNote("red", "", "Invalid corpse mode: " .. mode)
+    ColourNote("yellow", "", "Valid modes are: " .. join_words(mode_order))
+    ColourNote("cyan", "", "Current mode: " .. GetCurrentMode())
     return
   end
 
@@ -596,13 +934,7 @@ function SetCorpseMode(name, line, wildcards)
 
   -- Show what commands will be executed
   if mode ~= "off" then
-    ColourNote("cyan", "", "Commands on death:")
-    for _, cmd in ipairs(mode_commands[mode]) do
-      ColourNote("cyan", "", "  - " .. cmd)
-    end
-    if mode == "totem" then
-      ColourNote("cyan", "", "  (Falls back to tinning if totem already exists)")
-    end
+    print_mode_commands(mode)
   else
     ColourNote("cyan", "", "Corpse handling disabled")
   end
@@ -711,7 +1043,7 @@ function OnCreatureDeath(name, line, wildcards)
     Note("This combat was a total of " .. round_counter .. " rounds")
   end
   round_counter = 0
-  Note("Round counter reset to zero")
+  routine_note("Round counter reset to zero")
 
   -- ===== VULNERABILITY TIMER LOGIC =====
   -- Cancel all vulnerability timers on death
@@ -726,16 +1058,17 @@ end
 
 function OnPluginInstall()
   if IsPluginInstalled("94925710eda2ee22c3a5fd4a") and GetPluginVariable("94925710eda2ee22c3a5fd4a", "startup_mode") == "verbose" then
-    ColourNote("green", "", "Combat Manager v1.1 loaded")
+    ColourNote("green", "", "Combat Manager v1.3 loaded")
     ColourNote("cyan", "", "  - Vulnerability timer tracking (9 types)")
     ColourNote("cyan", "", "  - Round counter")
     ColourNote("cyan", "", "  - Corpse handling (" .. GetCurrentMode() .. " mode)")
-    ColourNote("yellow", "", "Use 'corpsemode [mode]' to change corpse handling")
-    ColourNote("yellow", "", "Modes: tin, disc, drain, totem, collect, ranger, troll, archer, necro, barb, parcher, off")
+    ColourNote("yellow", "", "Use 'cmstatus' for status or 'cmhelp' for commands")
   end
 end
 
 function OnPluginSaveState()
+  SetVariable("vuln_duration", tostring(get_vuln_duration()))
+  SetVariable("quiet_mode", get_quiet_mode() and "1" or "0")
   -- corpse_mode is saved inline by SetCorpseMode on every change
   -- round counter is saved inline by IncrementRound and reset inline by OnCreatureDeath
   -- vuln timers and runtime flags (active_timers, pending_vuln_type, etc.) are session-only state

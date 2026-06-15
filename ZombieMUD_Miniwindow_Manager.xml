@@ -11,7 +11,7 @@
    save_state="y"
    date_written="2026-06-11"
    requires="4.73"
-   version="1.1"
+   version="1.2"
 >
 <description trim="y">
 <![CDATA[
@@ -23,17 +23,29 @@ Plugins can register miniwindows with:
 Useful commands:
   zombie windows list  - list registered miniwindows
   zwindows             - same as zombie windows list
+  zwindows status      - show window lock and registered windows
+  zwindows lock        - prevent supported miniwindows from moving/resizing
+  zwindows unlock      - allow supported miniwindows to move/resize
+  zwindows reset       - ask supported miniwindows to reset their positions
 ]]>
 </description>
 </plugin>
 
 <aliases>
   <alias
-    match="^(?:zombie windows list|zwindows)$"
+    match="^(?:zombie windows list|zwindows(?:\s+(list|status))?)$"
     enabled="y"
     regexp="y"
     ignore_case="y"
     script="list_windows"
+    sequence="100"
+  />
+  <alias
+    match="^zwindows\s+(lock|unlock|reset)$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="window_command"
     sequence="100"
   />
 </aliases>
@@ -42,6 +54,7 @@ Useful commands:
 <![CDATA[
 
 local used_numbers = {}
+local window_lock = GetVariable("window_lock") == "1"
 
 local function variable_name(window_id)
   return "z_" .. tostring(window_id)
@@ -76,6 +89,14 @@ local function display_name(window_id)
     return "Party Bars"
   end
   return window_id
+end
+
+local function lock_text()
+  return window_lock and "locked" or "unlocked"
+end
+
+local function print_lock_status()
+  ColourNote(window_lock and "yellow" or "lime", "", "ZombieMUD miniwindows are " .. lock_text() .. ".")
 end
 
 local function remove_window(window_id)
@@ -119,6 +140,10 @@ function registerMiniwindow(window_id)
 end
 
 function boostMe(window_id)
+  if window_lock then
+    return
+  end
+
   window_id = tostring(window_id or "")
   if window_id == "" then
     return
@@ -148,9 +173,44 @@ function dropMe(window_id)
   arrangeZ()
 end
 
+function isLocked()
+  return window_lock and "1" or "0"
+end
+
+function lockWindows()
+  window_lock = true
+  SetVariable("window_lock", "1")
+  print_lock_status()
+end
+
+function unlockWindows()
+  window_lock = false
+  SetVariable("window_lock", "0")
+  print_lock_status()
+end
+
+function resetWindows()
+  ColourNote("cyan", "", "Asking ZombieMUD miniwindows to reset their positions...")
+  BroadcastPlugin(997, "reset z windows")
+end
+
+function window_command(name, line, wildcards)
+  local command = (wildcards[1] or ""):lower()
+  if command == "lock" then
+    lockWindows()
+  elseif command == "unlock" then
+    unlockWindows()
+  elseif command == "reset" then
+    resetWindows()
+  else
+    list_windows()
+  end
+end
+
 function list_windows()
   print("")
   ColourNote("paleturquoise", "", "ZombieMUD miniwindows:")
+  print_lock_status()
   local count = 0
   for _, n in ipairs(sorted_keys(used_numbers)) do
     count = count + 1
@@ -169,11 +229,13 @@ function list_windows()
 end
 
 function OnPluginInstall()
+  window_lock = GetVariable("window_lock") == "1"
   used_numbers = {}
   BroadcastPlugin(996, "re-register z")
 end
 
 function OnPluginSaveState()
+  SetVariable("window_lock", window_lock and "1" or "0")
   arrangeZ()
 end
 

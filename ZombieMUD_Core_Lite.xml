@@ -11,7 +11,7 @@
    save_state="y"
    date_written="2026-06-15"
    requires="4.00"
-   version="1.0"
+   version="1.1"
 >
 <description trim="y">
 <![CDATA[
@@ -26,8 +26,10 @@ This lightweight core manages only:
 Useful commands:
   zlite              - show help
   zlite status       - show plugin health and common settings
+  zlite plugins check - show missing or disabled lite plugins
   zlite plugins load - try to load or enable the lite plugin set
   zlite reload       - reload all lite plugins
+  zlite reload all   - reload all lite plugins
   zlite reload list  - show reload targets
 ]]>
 </description>
@@ -217,7 +219,16 @@ local function reload_one(plugin)
   end
 
   if ok then
-    ColourNote("red", "", "  problem: " .. plugin.name .. " reload returned code " .. tostring(result) .. ".")
+    if result == 30030 then
+      local loaded_path = (GetPluginInfo(plugin.id, 20) or "") .. (GetPluginInfo(plugin.id, 6) or plugin.name .. ".xml")
+      local core_path = (GetPluginInfo(GetPluginID(), 20) or "") .. plugin.name .. ".xml"
+      ColourNote("red", "", "  problem: " .. plugin.name .. " reload file was not found.")
+      ColourNote("yellow", "", "  MUSHclient tried to reload: " .. loaded_path)
+      ColourNote("yellow", "", "  Core Lite expects a copy at: " .. core_path)
+      ColourNote("cyan", "", "  Restore the XML file, then run 'zlite reload " .. plugin.key .. "'.")
+    else
+      ColourNote("red", "", "  problem: " .. plugin.name .. " reload returned code " .. tostring(result) .. ".")
+    end
   else
     ColourNote("red", "", "  problem: " .. plugin.name .. " reload failed: " .. tostring(result))
   end
@@ -229,6 +240,7 @@ local function print_reload_targets()
   ColourNote("lime", "", "ZombieMUD Core Lite reload targets")
   print_help_group("Targets:", {
     { "zlite reload", "reload all lite plugins" },
+    { "zlite reload all", "reload all lite plugins" },
     { "zlite reload messages", "reload Message Router" },
     { "zlite reload combat", "reload Combat Manager" },
     { "zlite reload audience", "reload Know Your Audience" },
@@ -245,6 +257,7 @@ function zlite_help_alias()
     { "zlite plugins check", "show missing or disabled lite plugins" },
     { "zlite plugins load", "try to load or enable the lite plugin set" },
     { "zlite reload", "reload all lite plugins without closing the world" },
+    { "zlite reload all", "reload all lite plugins" },
     { "zlite reload list", "show reload targets" },
     { "zlite sounds background", "toggle sounds while MUSHclient is not focused" },
   })
@@ -252,8 +265,21 @@ function zlite_help_alias()
     { "msgwin", "show or hide message windows" },
     { "msgsize both 800 20", "resize message windows" },
     { "msglog on/off", "turn message logging on or off" },
+    { "msglogpath", "show the current message log folder" },
+    { "msgcopylog tells 100", "copy recent message history to clipboard" },
     { "msgbell on/off", "turn tell bell on or off" },
+    { "msgtimestamp", "show or change message-window timestamps" },
+    { "msgchannels", "show channel routing overrides" },
+    { "cmhelp", "show Combat Manager commands" },
+    { "cmstatus", "show Combat Manager status" },
     { "corpsemode <mode>", "set corpse handling; use off to disable" },
+    { "corpsemode list", "show corpse handling modes" },
+    { "cmquiet on/off", "hide or show routine debug notes" },
+    { "vulnstatus", "show active vulnerability timers" },
+    { "vulnclear", "clear active vulnerability timers" },
+    { "vulntime 27", "set vulnerability timer duration in seconds" },
+    { "rounds / roundreset", "show or reset combat round counter" },
+    { "docorpse", "manually run the current corpse mode" },
     { "- <path> / . / ..", "load and step through SimpleStepper paths" },
   })
   ColourNote("khaki", "", "  Know Your Audience has no command alias; it watches the spell output automatically.")
@@ -271,11 +297,14 @@ function zlite_status_alias()
   if IsPluginInstalled(MESSAGE_ID) then
     setting_line("Message logging", yes_no(plugin_var(MESSAGE_ID, "log_messages", "1")))
     setting_line("Tell bell", yes_no(plugin_var(MESSAGE_ID, "bell_on_tell", "0")))
+    setting_line("Timestamps", plugin_var(MESSAGE_ID, "timestamp_format", "[%H:%M:%S] "))
     setting_line("Channels window", visible_state("msg_router_channels_" .. MESSAGE_ID))
     setting_line("Tells window", visible_state("msg_router_tells_" .. MESSAGE_ID))
   end
   if IsPluginInstalled(COMBAT_ID) then
     setting_line("Corpse mode", plugin_var(COMBAT_ID, "corpse_mode", "(default)"))
+    setting_line("Combat quiet mode", yes_no(plugin_var(COMBAT_ID, "quiet_mode", "0")))
+    setting_line("Combat vuln duration", plugin_var(COMBAT_ID, "vuln_duration", "27") .. " seconds")
   end
   ColourNote("cyan", "", "Type 'zlite' for Lite commands.")
   print("")

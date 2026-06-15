@@ -13,7 +13,7 @@
    purpose="Routes tells and channels to miniwindows with logging"
    date_written="2025-11-28"
    requires="4.58"
-   version="3.8"
+   version="4.0"
    save_state="y"
    >
 <description trim="y">
@@ -38,6 +38,8 @@ Aliases:
 - msgreset            : swap the window positions
 - msgsize target W R  : resize channels/tells/both to width W and R visible rows
 - msglog [on|off]     : show or change file logging
+- msglogpath          : show the current log folder and filename prefix
+- msgcopylog [target] [lines] : copy recent tells/window history
 - msgbell [on|off]    : show or change tell bell sound
 - msgtimestamp [format] : show or change miniwindow timestamps
 - msgchannel allow x  : allow <x> as a real channel
@@ -83,6 +85,22 @@ Configuration:
     enabled="y"
     regexp="y"
     script="set_logging"
+    sequence="100"
+  />
+  <alias
+    match="^msglogpath$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="show_log_path"
+    sequence="100"
+  />
+  <alias
+    match="^msgcopylog(?:\s+(tells|lasttells|channels|all))?(?:\s+(\d+))?$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="copy_recent_log"
     sequence="100"
   />
   <alias
@@ -246,6 +264,29 @@ require "movewindow"
 local ZOMBIE_WINDOW_MANAGER_ID = "11e1d11e4a0d932dd870363f"
 local register_with_window_manager
 local boost_window
+
+local function window_manager_locked()
+  if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+    local ok, result, value = pcall(CallPlugin, ZOMBIE_WINDOW_MANAGER_ID, "isLocked", "")
+    if ok then
+      return value == "1" or result == "1"
+    end
+  end
+  return false
+end
+
+local function call_window_manager(function_name)
+  if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+    local ok, err = pcall(CallPlugin, ZOMBIE_WINDOW_MANAGER_ID, function_name, "")
+    if ok then
+      return true
+    end
+    ColourNote("red", "", "[Message Router] Window manager call failed: " .. tostring(err))
+    return false
+  end
+  ColourNote("yellow", "", "[Message Router] ZombieMUD Miniwindow Manager is not loaded.")
+  return false
+end
 
 -- Whitelist of valid channel names for angle bracket <> format
 -- This prevents item buffs like <bound> from being mistaken for channels
@@ -829,6 +870,7 @@ end
 local function begin_resize(win_id)
   local m = win_metrics[win_id]
   if not m then return end
+  if window_manager_locked() then return end
   boost_window(win_id)
   resize_state[win_id] = {
     left = WindowInfo(win_id, 10),
@@ -841,6 +883,7 @@ local function drag_resize(win_id, force)
   local state = resize_state[win_id]
   local m = win_metrics[win_id]
   if not state or not m then return end
+  if window_manager_locked() then return end
 
   local now = utils.timer()
   if not force and now - state.last_refresh < 0.033 then
@@ -862,7 +905,9 @@ end
 -- ==================== MINIWINDOW HELPERS ====================
 
 function init_window(win_id, title, default_pos)
-  local info = movewindow.install(win_id, default_pos, 0, false)
+  local info = movewindow.install(win_id, default_pos, 0, false, nil, {
+    dragmove = function() return window_manager_locked() end,
+  })
   local saved_width = tonumber(GetVariable(window_var(win_id, "width"))) or DEFAULT_WIN_WIDTH
   local saved_rows = tonumber(GetVariable(window_var(win_id, "rows"))) or DEFAULT_VISIBLE_ROWS
   local start_width = clamp(saved_width, MIN_WIN_WIDTH, MAX_WIN_WIDTH)
@@ -1310,6 +1355,16 @@ function list_channel_overrides()
 end
 
 function reset_window_positions()
+  local function update_movewindow_info(win_id, x, y)
+    local info = _G["mw_" .. win_id .. "_movewindow_info"]
+    if info then
+      info.window_left = x
+      info.window_top = y
+      info.window_mode = 0
+      info.window_flags = miniwin.create_absolute_location
+    end
+  end
+
   -- Read current positions of the two windows
   local ch_x = WindowInfo(CH_WIN, 10)  -- left edge
   local ch_y = WindowInfo(CH_WIN, 11)  -- top edge
@@ -1319,6 +1374,8 @@ function reset_window_positions()
   -- Swap the Y positions (keep X the same), move immediately
   WindowPosition(CH_WIN, ch_x, te_y, 0, miniwin.create_absolute_location)
   WindowPosition(TE_WIN, te_x, ch_y, 0, miniwin.create_absolute_location)
+  update_movewindow_info(CH_WIN, ch_x, te_y)
+  update_movewindow_info(TE_WIN, te_x, ch_y)
 
   -- Update the saved variables to match the new positions so they survive reload
   SetVariable("mw_" .. CH_WIN .. "_windowx", tostring(ch_x))
@@ -1538,6 +1595,78 @@ local function copy_text(label, text)
   end
 end
 
+local function current_log_prefix()
+  return log_directory_base .. os.date("%y_%b_")
+end
+
+local function last_lines_text(text, wanted)
+  wanted = clamp(tonumber(wanted) or 100, 1, 1000)
+  local lines = {}
+  for line in (text or ""):gmatch("([^\n]*)\n?") do
+    if line ~= "" then
+      lines[#lines + 1] = line
+    end
+  end
+
+  local start = math.max(1, #lines - wanted + 1)
+  local out = {}
+  for i = start, #lines do
+    out[#out + 1] = lines[i]
+  end
+  return table.concat(out, "\n")
+end
+
+local function read_file(path)
+  local f = io.open(path, "r")
+  if not f then
+    return nil
+  end
+  local text = f:read("*a") or ""
+  f:close()
+  return text
+end
+
+local function copy_recent_file(label, path, line_count)
+  local text = read_file(path)
+  if not text or text == "" then
+    ColourNote("yellow", "", "[Message Router] No log text found at: " .. path)
+    return
+  end
+  copy_text(label, last_lines_text(text, line_count))
+end
+
+function show_log_path()
+  print("")
+  ColourNote("lime", "", "Message Router logs")
+  ColourNote("khaki", "", "  Folder: " .. log_directory_base)
+  ColourNote("khaki", "", "  Current filename prefix: " .. os.date("%y_%b_"))
+  ColourNote("khaki", "", "  Tells log: " .. current_log_prefix() .. "active_tells.txt")
+  ColourNote("khaki", "", "  Last tells log: " .. current_log_prefix() .. "last_tells.txt")
+  ColourNote("khaki", "", "  Channel logs: " .. current_log_prefix() .. "active_<channel>.txt")
+  ColourNote("khaki", "", "  Logging: " .. (log_messages == 1 and "on" or "off"))
+  print("")
+end
+
+function copy_recent_log(name, line, wildcards)
+  local target = ((wildcards and wildcards[1]) or "tells"):lower()
+  local line_count = tonumber(wildcards and wildcards[2]) or 100
+  local prefix = current_log_prefix()
+
+  if target == "tells" then
+    copy_recent_file("recent tells log", prefix .. "active_tells.txt", line_count)
+  elseif target == "lasttells" then
+    copy_recent_file("recent last-tells log", prefix .. "last_tells.txt", line_count)
+  elseif target == "channels" then
+    copy_text("recent channel window history", last_lines_text(all_text(CH_WIN), line_count))
+  elseif target == "all" then
+    local text = "Channels:\n" .. last_lines_text(all_text(CH_WIN), line_count) ..
+                 "\n\nTells:\n" .. last_lines_text(all_text(TE_WIN), line_count)
+    copy_text("recent message-window history", text)
+  else
+    ColourNote("yellow", "", "[Message Router] Use: msgcopylog tells|lasttells|channels|all [lines]")
+  end
+end
+
 local function show_context_menu(win_id)
   local sel = selection_for_window(win_id)
   local menu = {}
@@ -1578,11 +1707,18 @@ local function show_context_menu(win_id)
     SetVariable("log_messages", tostring(log_messages))
     ColourNote(log_messages == 1 and "lime" or "yellow", "", "[Message Router] File logging is " .. (log_messages == 1 and "ON." or "OFF."))
   end)
+  add("Show Log Path", show_log_path)
+  add("Copy Recent Tells Log", function() copy_recent_log("", "", { "tells", "100" }) end)
   add((bell_on_tell == 1 and "+" or "") .. "Tell Bell", function()
     bell_on_tell = (bell_on_tell == 1) and 0 or 1
     SetVariable("bell_on_tell", tostring(bell_on_tell))
     ColourNote(bell_on_tell == 1 and "lime" or "yellow", "", "[Message Router] Tell bell is " .. (bell_on_tell == 1 and "ON." or "OFF."))
   end)
+  if window_manager_locked() then
+    add("+Window Lock", function() call_window_manager("unlockWindows") end)
+  else
+    add("Window Lock", function() call_window_manager("lockWindows") end)
+  end
 
   local result = tonumber(WindowMenu(win_id, WindowInfo(win_id, 14), WindowInfo(win_id, 15), "!" .. table.concat(menu, "|")))
   if result and actions[result] then
@@ -1889,7 +2025,7 @@ function OnPluginInstall()
   register_with_window_manager(CH_WIN)
   show_msg_windows()
   if IsPluginInstalled("94925710eda2ee22c3a5fd4a") and GetPluginVariable("94925710eda2ee22c3a5fd4a", "startup_mode") == "verbose" then
-    ColourNote("cyan", "", "Message Router v3.8 loaded - Aardwolf-style text selection, timestamps, and right-click menu")
+    ColourNote("cyan", "", "Message Router v4.0 loaded - Aardwolf-style text selection, timestamps, right-click menu, and log helpers")
     ColourNote("cyan", "", "Channels window: top-right  |  Tells window: bottom-right")
     ColourNote("cyan", "", "Drag the lower-right corner to resize, or use: msgsize channels|tells|both width rows")
     ColourNote("cyan", "", "Type 'msgwin' to toggle both windows on/off")
@@ -1921,6 +2057,8 @@ function OnPluginBroadcast(msg, id, name, text)
   if id == ZOMBIE_WINDOW_MANAGER_ID and msg == 996 and text == "re-register z" then
     register_with_window_manager(TE_WIN)
     register_with_window_manager(CH_WIN)
+  elseif msg == 997 and text == "reset z windows" then
+    reset_window_positions()
   end
 end
 

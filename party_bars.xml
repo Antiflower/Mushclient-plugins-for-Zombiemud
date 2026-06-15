@@ -1,0 +1,675 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="Party_Bars"
+   author="Claude"
+   id="a1b2c3d4e5f6a7b8c9d0e1f2"
+   language="Lua"
+   purpose="Displays HP and SP bars from party prompts"
+   save_state="y"
+   date_written="2026-01-28"
+   requires="4.50"
+   version="1.2"
+>
+<description trim="y">
+<![CDATA[
+Party Bars - Displays graphical HP/SP bars from ZombieMUD party prompts
+
+Aliases:
+  partybars                    - Toggle window visibility
+  partybars status             - Show current Party Bars status
+  partybars copy               - Copy current HP/SP summary to clipboard
+  partybars reset              - Reset window position
+  partybars size [width] [height] - Resize the window
+  partybars name [name]        - Set your character name for party parsing
+  partybars lock/unlock        - Lock or unlock supported ZombieMUD miniwindows
+]]>
+</description>
+</plugin>
+
+<timers>
+  <timer
+    name="party_bars_stale_refresh"
+    enabled="y"
+    second="15.00"
+    send_to="12"
+    script="on_stale_timer"
+  />
+</timers>
+
+<aliases>
+  <alias
+    match="^partybars$"
+    enabled="y"
+    regexp="y"
+    script="toggle_window"
+    sequence="100"
+  />
+  <alias
+    match="^partybars status$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="show_status"
+    sequence="100"
+  />
+  <alias
+    match="^partybars copy$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="copy_status"
+    sequence="100"
+  />
+  <alias
+    match="^partybars reset$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="reset_position"
+    sequence="100"
+  />
+  <alias
+    match="^partybars size (\d+) (\d+)$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="resize_window"
+    sequence="100"
+  />
+  <alias
+    match="^partybars name (\w+)$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="set_name"
+    sequence="100"
+  />
+  <alias
+    match="^partybars (lock|unlock)$"
+    enabled="y"
+    regexp="y"
+    ignore_case="y"
+    script="set_window_lock"
+    sequence="100"
+  />
+</aliases>
+
+<triggers>
+  <trigger
+    enabled="y"
+    match="^(\w+) [\[{]party[\]}]: hp: (\d+) \((\d+)\) sp: (\d+) \((\d+)\)\s*$"
+    regexp="y"
+    script="on_party_prompt"
+    sequence="100"
+    keep_evaluating="y"
+  />
+  <trigger
+    enabled="y"
+    match="^hp: (\d+)\((\d+)\) sp: (\d+)\((\d+)\)\s*$"
+    regexp="y"
+    script="on_solo_prompt"
+    sequence="100"
+    keep_evaluating="y"
+  />
+</triggers>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+-- Configuration
+local ZOMBIE_WINDOW_MANAGER_ID = "11e1d11e4a0d932dd870363f"
+local WIN_ID = "party_bars_" .. GetPluginID()
+local WIN_WIDTH = 220
+local WIN_HEIGHT = 70
+local MIN_WIN_WIDTH = 150
+local MIN_WIN_HEIGHT = 58
+local MAX_WIN_WIDTH = 520
+local MAX_WIN_HEIGHT = 180
+local BAR_HEIGHT = 18
+local BAR_MARGIN = 8
+local RESIZE_HANDLE = 14
+local STALE_SECONDS = 60
+local FONT_ID = "bar_font"
+local FONT_SIZE = 9
+
+-- Colors
+local COLOR_BG = ColourNameToRGB("black")
+local COLOR_BORDER = ColourNameToRGB("gray")
+local COLOR_HP_FULL = ColourNameToRGB("lime")
+local COLOR_HP_MED = ColourNameToRGB("yellow")
+local COLOR_HP_LOW = ColourNameToRGB("red")
+local COLOR_SP_FULL = ColourNameToRGB("dodgerblue")
+local COLOR_SP_MED = ColourNameToRGB("cyan")
+local COLOR_SP_LOW = ColourNameToRGB("magenta")
+local COLOR_BAR_BG = ColourNameToRGB("#333333")
+local COLOR_TEXT = ColourNameToRGB("white")
+local COLOR_TEXT_SHADOW = ColourNameToRGB("black")
+local COLOR_MUTED = ColourNameToRGB("dimgray")
+local COLOR_STALE = ColourNameToRGB("khaki")
+local COLOR_RESIZE = ColourNameToRGB("silver")
+
+-- State
+local current_hp = 0
+local max_hp = 1
+local current_sp = 0
+local max_sp = 1
+local player_name = ""
+local my_name = ""
+local window_visible = true
+local windowinfo = nil
+local last_update = 0
+local resize_state = nil
+
+local function clamp(value, low, high)
+    value = tonumber(value) or low
+    if value < low then return low end
+    if value > high then return high end
+    return value
+end
+
+local function manager_locked()
+    if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+        local ok, result, value = pcall(CallPlugin, ZOMBIE_WINDOW_MANAGER_ID, "isLocked", "")
+        if ok then
+            return value == "1" or result == "1"
+        end
+    end
+    return false
+end
+
+local function call_manager(function_name)
+    if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+        local ok, err = pcall(CallPlugin, ZOMBIE_WINDOW_MANAGER_ID, function_name, "")
+        if ok then
+            return true
+        end
+        ColourNote("red", "", "Party Bars: Could not call window manager: " .. tostring(err))
+        return false
+    end
+    ColourNote("yellow", "", "Party Bars: ZombieMUD Miniwindow Manager is not loaded.")
+    return false
+end
+
+local function prompt_age()
+    if last_update == 0 then
+        return nil
+    end
+    return math.max(0, os.time() - last_update)
+end
+
+local function is_stale()
+    local age = prompt_age()
+    return age ~= nil and age >= STALE_SECONDS
+end
+
+local function party_status_text()
+    local hp_pct = max_hp > 0 and math.floor((current_hp / max_hp) * 100) or 0
+    local sp_pct = max_sp > 0 and math.floor((current_sp / max_sp) * 100) or 0
+    local who = player_name ~= "" and player_name or my_name
+    if who == "" then
+        who = "unknown"
+    end
+
+    local age = prompt_age()
+    local age_text = age and (age .. "s ago") or "not seen yet"
+    return string.format("%s HP: %d/%d (%d%%), SP: %d/%d (%d%%), prompt: %s",
+                         who, current_hp, max_hp, hp_pct, current_sp, max_sp, sp_pct, age_text)
+end
+
+local function move_resize_hotspot()
+    if not WindowInfo(WIN_ID, 1) then return end
+    local id = WIN_ID .. "_resize"
+    if WindowHotspotInfo(WIN_ID, id, 1) then
+        WindowMoveHotspot(WIN_ID, id, WIN_WIDTH - RESIZE_HANDLE, WIN_HEIGHT - RESIZE_HANDLE, WIN_WIDTH, WIN_HEIGHT)
+    else
+        WindowAddHotspot(WIN_ID, id,
+                         WIN_WIDTH - RESIZE_HANDLE, WIN_HEIGHT - RESIZE_HANDLE,
+                         WIN_WIDTH, WIN_HEIGHT,
+                         "", "",
+                         "on_resize_down",
+                         "",
+                         "on_resize_up",
+                         "Drag to resize Party Bars",
+                         miniwin.cursor_both_arrow, 0)
+        WindowDragHandler(WIN_ID, id, "on_resize_drag", "on_resize_release", 0x10)
+    end
+end
+
+local function draw_resize_tag()
+    local right = WIN_WIDTH - 3
+    local bottom = WIN_HEIGHT - 3
+    WindowLine(WIN_ID, right - 9, bottom, right, bottom - 9, COLOR_RESIZE, miniwin.pen_solid, 1)
+    WindowLine(WIN_ID, right - 5, bottom, right, bottom - 5, COLOR_RESIZE, miniwin.pen_solid, 1)
+end
+
+local function register_with_window_manager()
+    if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+        CallPlugin(ZOMBIE_WINDOW_MANAGER_ID, "registerMiniwindow", WIN_ID)
+    end
+end
+
+local function boost_window()
+    if IsPluginInstalled(ZOMBIE_WINDOW_MANAGER_ID) then
+        CallPlugin(ZOMBIE_WINDOW_MANAGER_ID, "boostMe", WIN_ID)
+    end
+end
+
+local function resize_to(width, height, quiet)
+    WIN_WIDTH = clamp(width, MIN_WIN_WIDTH, MAX_WIN_WIDTH)
+    WIN_HEIGHT = clamp(height, MIN_WIN_HEIGHT, MAX_WIN_HEIGHT)
+    WindowResize(WIN_ID, WIN_WIDTH, WIN_HEIGHT, COLOR_BG)
+    move_resize_hotspot()
+    draw_bars()
+    if not quiet then
+        ColourNote("lime", "", "Party Bars: Resized to " .. WIN_WIDTH .. "x" .. WIN_HEIGHT)
+    end
+end
+
+local function set_visible(show, quiet)
+    window_visible = show and true or false
+    WindowShow(WIN_ID, window_visible)
+    if window_visible then
+        draw_bars()
+    end
+    if not quiet then
+        ColourNote(window_visible and "lime" or "yellow", "", "Party Bars: Window " .. (window_visible and "shown" or "hidden"))
+    end
+end
+
+local function set_character_name(new_name)
+    new_name = (new_name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if new_name == "" then
+        ColourNote("yellow", "", "Party Bars: Character name was not changed.")
+        return
+    end
+    my_name = new_name
+    player_name = my_name
+    SetVariable("my_name", my_name)
+    ColourNote("lime", "", "Party Bars: Character name set to " .. my_name)
+    draw_bars()
+end
+
+local function on_window_mousedown(flags, hotspot_id, win)
+    if bit.band(flags, miniwin.hotspot_got_rh_mouse) ~= 0 then
+        return true
+    end
+    if manager_locked() then
+        return true
+    end
+    boost_window()
+    return false
+end
+
+local function on_window_dragmove(flags, hotspot_id, win)
+    return manager_locked()
+end
+
+local function on_window_mouseup(flags, hotspot_id, win)
+    if bit.band(flags, miniwin.hotspot_got_rh_mouse) ~= 0 then
+        show_context_menu()
+    end
+end
+
+function OnPluginInstall()
+    -- Load saved state
+    window_visible = GetVariable("visible") ~= "0"
+    my_name = GetVariable("my_name") or ""
+    player_name = my_name
+    WIN_WIDTH = clamp(GetVariable("win_width") or WIN_WIDTH, MIN_WIN_WIDTH, MAX_WIN_WIDTH)
+    WIN_HEIGHT = clamp(GetVariable("win_height") or WIN_HEIGHT, MIN_WIN_HEIGHT, MAX_WIN_HEIGHT)
+
+    -- Use movewindow library to handle positioning
+    windowinfo = movewindow.install(WIN_ID, miniwin.pos_top_left, 0, false, nil, {
+        mousedown = on_window_mousedown,
+        mouseup = on_window_mouseup,
+        dragmove = on_window_dragmove,
+    }, {x = 50, y = 50})
+
+    -- Create the window
+    WindowCreate(WIN_ID,
+                 windowinfo.window_left,
+                 windowinfo.window_top,
+                 WIN_WIDTH,
+                 WIN_HEIGHT,
+                 windowinfo.window_mode,
+                 windowinfo.window_flags,
+                 COLOR_BG)
+
+    -- Install font
+    WindowFont(WIN_ID, FONT_ID, "Consolas", FONT_SIZE, true, false, false, false)
+
+    -- Register drag handler once at init (entire window is the drag zone)
+    movewindow.add_drag_handler(WIN_ID, 0, 0, 0, 0)
+    move_resize_hotspot()
+
+    if window_visible then
+        WindowShow(WIN_ID, true)
+        draw_bars()
+    end
+    register_with_window_manager()
+end
+
+function OnPluginSaveState()
+    SetVariable("visible", window_visible and "1" or "0")
+    SetVariable("my_name", my_name)
+    SetVariable("win_width", tostring(WIN_WIDTH))
+    SetVariable("win_height", tostring(WIN_HEIGHT))
+    movewindow.save_state(WIN_ID)
+end
+
+function get_hp_color(percentage)
+    if percentage > 0.6 then
+        return COLOR_HP_FULL
+    elseif percentage > 0.3 then
+        return COLOR_HP_MED
+    else
+        return COLOR_HP_LOW
+    end
+end
+
+function get_sp_color(percentage)
+    if percentage > 0.6 then
+        return COLOR_SP_FULL
+    elseif percentage > 0.3 then
+        return COLOR_SP_MED
+    else
+        return COLOR_SP_LOW
+    end
+end
+
+function draw_bars()
+    if not window_visible then return end
+
+    -- Clear window
+    WindowRectOp(WIN_ID, miniwin.rect_fill, 0, 0, WIN_WIDTH, WIN_HEIGHT, COLOR_BG)
+
+    -- Draw border
+    WindowRectOp(WIN_ID, miniwin.rect_frame, 0, 0, WIN_WIDTH, WIN_HEIGHT, COLOR_BORDER)
+
+    local bar_width = WIN_WIDTH - (BAR_MARGIN * 2)
+    local hp_y = BAR_MARGIN
+    local sp_y = BAR_MARGIN + BAR_HEIGHT + 6
+
+    -- Calculate percentages
+    local hp_pct = max_hp > 0 and (current_hp / max_hp) or 0
+    local sp_pct = max_sp > 0 and (current_sp / max_sp) or 0
+
+    -- Clamp to 0-1
+    hp_pct = math.max(0, math.min(1, hp_pct))
+    sp_pct = math.max(0, math.min(1, sp_pct))
+    local stale = is_stale()
+
+    -- HP Bar background
+    WindowRectOp(WIN_ID, miniwin.rect_fill, BAR_MARGIN, hp_y,
+                 BAR_MARGIN + bar_width, hp_y + BAR_HEIGHT, COLOR_BAR_BG)
+
+    -- HP Bar fill
+    local hp_fill_width = math.floor(bar_width * hp_pct)
+    if hp_fill_width > 0 then
+        WindowRectOp(WIN_ID, miniwin.rect_fill, BAR_MARGIN, hp_y,
+                     BAR_MARGIN + hp_fill_width, hp_y + BAR_HEIGHT, stale and COLOR_MUTED or get_hp_color(hp_pct))
+    end
+
+    -- HP Bar border
+    WindowRectOp(WIN_ID, miniwin.rect_frame, BAR_MARGIN, hp_y,
+                 BAR_MARGIN + bar_width, hp_y + BAR_HEIGHT, COLOR_BORDER)
+
+    -- HP Text (centered)
+    local hp_text = string.format("HP: %d / %d (%d%%)", current_hp, max_hp, math.floor(hp_pct * 100))
+    local text_width = WindowTextWidth(WIN_ID, FONT_ID, hp_text)
+    local text_x = BAR_MARGIN + (bar_width - text_width) / 2
+    local text_y = hp_y + (BAR_HEIGHT - FONT_SIZE) / 2 - 1
+
+    -- Text shadow
+    WindowText(WIN_ID, FONT_ID, hp_text, text_x + 1, text_y + 1, 0, 0, COLOR_TEXT_SHADOW)
+    WindowText(WIN_ID, FONT_ID, hp_text, text_x, text_y, 0, 0, COLOR_TEXT)
+
+    -- SP Bar background
+    WindowRectOp(WIN_ID, miniwin.rect_fill, BAR_MARGIN, sp_y,
+                 BAR_MARGIN + bar_width, sp_y + BAR_HEIGHT, COLOR_BAR_BG)
+
+    -- SP Bar fill
+    local sp_fill_width = math.floor(bar_width * sp_pct)
+    if sp_fill_width > 0 then
+        WindowRectOp(WIN_ID, miniwin.rect_fill, BAR_MARGIN, sp_y,
+                     BAR_MARGIN + sp_fill_width, sp_y + BAR_HEIGHT, stale and COLOR_MUTED or get_sp_color(sp_pct))
+    end
+
+    -- SP Bar border
+    WindowRectOp(WIN_ID, miniwin.rect_frame, BAR_MARGIN, sp_y,
+                 BAR_MARGIN + bar_width, sp_y + BAR_HEIGHT, COLOR_BORDER)
+
+    -- SP Text (centered)
+    local sp_text = string.format("SP: %d / %d (%d%%)", current_sp, max_sp, math.floor(sp_pct * 100))
+    text_width = WindowTextWidth(WIN_ID, FONT_ID, sp_text)
+    text_x = BAR_MARGIN + (bar_width - text_width) / 2
+    text_y = sp_y + (BAR_HEIGHT - FONT_SIZE) / 2 - 1
+
+    -- Text shadow
+    WindowText(WIN_ID, FONT_ID, sp_text, text_x + 1, text_y + 1, 0, 0, COLOR_TEXT_SHADOW)
+    WindowText(WIN_ID, FONT_ID, sp_text, text_x, text_y, 0, 0, COLOR_TEXT)
+
+    -- Title bar with player name
+    if player_name ~= "" then
+        local title = player_name
+        if stale then
+            title = title .. " - stale " .. prompt_age() .. "s"
+        elseif last_update == 0 then
+            title = title .. " - waiting"
+        end
+        local title_y = WIN_HEIGHT - 14
+        local title_width = WindowTextWidth(WIN_ID, FONT_ID, title)
+        local title_x = (WIN_WIDTH - title_width) / 2
+        WindowText(WIN_ID, FONT_ID, title, title_x + 1, title_y + 1, 0, 0, COLOR_TEXT_SHADOW)
+        WindowText(WIN_ID, FONT_ID, title, title_x, title_y, 0, 0, stale and COLOR_STALE or ColourNameToRGB("silver"))
+    end
+
+    draw_resize_tag()
+end
+
+function on_party_prompt(name, line, wildcards)
+    local who = wildcards[1]
+
+    -- Only update from party prompts if it's our own character
+    if my_name == "" then
+        -- Name not set yet, auto-detect from first solo prompt
+        return
+    end
+
+    if who:lower() ~= my_name:lower() then
+        return
+    end
+
+    player_name = who
+    current_hp = tonumber(wildcards[2]) or 0
+    max_hp = tonumber(wildcards[3]) or 1
+    current_sp = tonumber(wildcards[4]) or 0
+    max_sp = tonumber(wildcards[5]) or 1
+    last_update = os.time()
+
+    draw_bars()
+end
+
+function on_solo_prompt(name, line, wildcards)
+    if my_name ~= "" then
+        player_name = my_name
+    end
+    current_hp = tonumber(wildcards[1]) or 0
+    max_hp = tonumber(wildcards[2]) or 1
+    current_sp = tonumber(wildcards[3]) or 0
+    max_sp = tonumber(wildcards[4]) or 1
+    last_update = os.time()
+
+    draw_bars()
+end
+
+function set_name(name, line, wildcards)
+    set_character_name(wildcards[1])
+end
+
+function toggle_window(name, line, wildcards)
+    set_visible(not window_visible, false)
+end
+
+function reset_position(name, line, wildcards)
+    WindowPosition(WIN_ID, 50, 50, 0, miniwin.create_absolute_location)
+    if windowinfo then
+        windowinfo.window_left = 50
+        windowinfo.window_top = 50
+        windowinfo.window_mode = 0
+        windowinfo.window_flags = miniwin.create_absolute_location
+    end
+    SetVariable("mw_" .. WIN_ID .. "_windowx", "50")
+    SetVariable("mw_" .. WIN_ID .. "_windowy", "50")
+    SetVariable("mw_" .. WIN_ID .. "_windowflags", "2")
+    register_with_window_manager()
+    ColourNote("lime", "", "Party Bars: Position reset to (50, 50)")
+end
+
+function resize_window(name, line, wildcards)
+    local new_width = tonumber(wildcards[1])
+    local new_height = tonumber(wildcards[2])
+
+    if new_width >= MIN_WIN_WIDTH and new_height >= MIN_WIN_HEIGHT then
+        resize_to(new_width, new_height, false)
+    else
+        ColourNote("red", "", "Party Bars: Minimum size is " .. MIN_WIN_WIDTH .. "x" .. MIN_WIN_HEIGHT)
+    end
+end
+
+function show_status()
+    print("")
+    ColourNote("lime", "", "Party Bars status")
+    ColourNote("khaki", "", "  Window: " .. (window_visible and "visible" or "hidden"))
+    ColourNote("khaki", "", "  Window lock: " .. (manager_locked() and "locked" or "unlocked"))
+    ColourNote("khaki", "", "  Character name: " .. (my_name ~= "" and my_name or "(not set)"))
+    ColourNote("khaki", "", "  Size: " .. WIN_WIDTH .. " x " .. WIN_HEIGHT)
+    ColourNote("khaki", "", "  Current: " .. party_status_text())
+    print("")
+end
+
+function copy_status()
+    local ok, err = pcall(SetClipboard, party_status_text())
+    if ok then
+        ColourNote("cyan", "", "Party Bars: Copied status to clipboard.")
+    else
+        ColourNote("red", "", "Party Bars: Copy failed: " .. tostring(err))
+    end
+end
+
+function set_window_lock(name, line, wildcards)
+    local mode = (wildcards[1] or ""):lower()
+    if mode == "lock" then
+        call_manager("lockWindows")
+    else
+        call_manager("unlockWindows")
+    end
+end
+
+function show_context_menu()
+    local menu = {}
+    local actions = {}
+
+    local function add(label, fn)
+        menu[#menu + 1] = label
+        actions[#actions + 1] = fn
+    end
+
+    local function raw(label)
+        menu[#menu + 1] = label
+    end
+
+    add(window_visible and "Hide Party Bars" or "Show Party Bars", function() set_visible(not window_visible, false) end)
+    add("Copy Party Status", copy_status)
+    add("Show Status", show_status)
+    raw("-")
+    add("Set Character Name...", function()
+        if not utils or not utils.inputbox then
+            ColourNote("yellow", "", "Party Bars: Type 'partybars name <yourname>' to set your character name.")
+            return
+        end
+        local ok, value = pcall(utils.inputbox, "Character name for Party Bars:", "Party Bars", my_name, "", 1)
+        if ok and value and value ~= "" then
+            set_character_name(value)
+        end
+    end)
+    add("Reset Position", reset_position)
+    raw(">Resize")
+    add("Compact 220 x 70", function() resize_to(220, 70, false) end)
+    add("Wide 280 x 86", function() resize_to(280, 86, false) end)
+    add("Large 340 x 100", function() resize_to(340, 100, false) end)
+    raw("<")
+    raw("-")
+    if manager_locked() then
+        add("+Window Lock", function() call_manager("unlockWindows") end)
+    else
+        add("Window Lock", function() call_manager("lockWindows") end)
+    end
+
+    local result = tonumber(WindowMenu(WIN_ID, WindowInfo(WIN_ID, 14), WindowInfo(WIN_ID, 15), "!" .. table.concat(menu, "|")))
+    if result and actions[result] then
+        actions[result]()
+    end
+end
+
+function on_resize_down(flags, hotspot_id)
+    if manager_locked() then
+        return
+    end
+    resize_state = {
+        left = WindowInfo(WIN_ID, 10),
+        top = WindowInfo(WIN_ID, 11),
+        last_refresh = 0,
+    }
+end
+
+function on_resize_drag(flags, hotspot_id)
+    if manager_locked() or not resize_state then
+        return
+    end
+
+    local now = utils.timer()
+    if now - resize_state.last_refresh < 0.033 then
+        return
+    end
+    resize_state.last_refresh = now
+    resize_to(WindowInfo(WIN_ID, 17) - resize_state.left, WindowInfo(WIN_ID, 18) - resize_state.top, true)
+end
+
+function on_resize_release(flags, hotspot_id)
+    if not resize_state then
+        return
+    end
+    resize_to(WindowInfo(WIN_ID, 17) - resize_state.left, WindowInfo(WIN_ID, 18) - resize_state.top, true)
+    resize_state = nil
+end
+
+function on_resize_up(flags, hotspot_id)
+    -- Release handler does the resize work.
+end
+
+function on_stale_timer(name)
+    if window_visible and last_update > 0 then
+        draw_bars()
+    end
+end
+
+function OnPluginClose()
+    WindowDelete(WIN_ID)
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+    if id == ZOMBIE_WINDOW_MANAGER_ID and msg == 996 and text == "re-register z" then
+        register_with_window_manager()
+    elseif msg == 997 and text == "reset z windows" then
+        reset_position()
+    end
+end
+]]>
+</script>
+
+</muclient>
