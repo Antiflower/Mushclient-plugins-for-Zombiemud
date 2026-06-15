@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<!DOCTYPE muclient>
+
+<muclient>
+  <plugin
+    name="SimpleStepper"
+    author="GORGAR"
+    id="999456123456123456123456" 
+    language="Lua"
+    purpose="Load and execute paths from external files"
+    save_state="y"
+    date_written="2024-01-05"
+    requires="3.46"
+    version="1.0"
+  >
+    <description><![CDATA[
+      This plugin allows loading paths from an external master file and executing commands step by step.
+       Use '- [filename]' to load a path file. Each path should be in the format 'pathName=command1;command2;...'.
+       Use '.' to execute the next command in the loaded path.
+       Use '..' to go backwards one step. This will only work if there is a reverse command specified in the plugin code.
+       Use 'stepperhelp' to print this help.
+       
+      Edit the plugin and reload to modify:
+       1. masterFilePath: the path to your master file containing all of your path data.
+          NOTE: the slashed go forward in the masterFilePath (ex: C:/whatever/)/
+       2. reverseCommands: add reverse commands as needed.
+       
+      The master file can contain several lines. Example line:
+       test=n;w;s;e;kill guard;smile,nod;cheer;bow
+      
+      To load this path from the master file, you would use the command: - test
+      - test
+      Current path set to: test
+      Total steps: 8, First step: n
+      
+      Now to take a step: .
+      . 
+      Executing command: n
+      n
+      Steps left: 7, Next step: w
+      Maybe you should look for another exit.
+      
+      Now to step backward:
+      ..
+      Going back one step: s
+      s
+      Maybe you should look for another exit.
+      
+      Note: if your path has commas like smile,nod then both commands will be executed at once
+      .
+      Executing command: smile
+      smile
+      Executing command: nod
+      nod
+      Steps left: 2, Next step: cheer
+      You smile happily.
+      You nod solemnly.
+      
+    ]]></description>
+  </plugin>
+
+    <script><![CDATA[
+    
+    
+    local paths = {}
+    local currentPath = nil
+    local currentStep = 1
+    
+    local masterFilePath = "C:/Program Files (x86)/MUSHclient/worlds/paths/paths.path"
+    local reverseCommands = {
+        n = "s",
+        s = "n",
+        e = "w",
+        w = "e",
+        ne = "sw",
+        nw = "se",
+        se = "nw",
+        sw = "ne",
+        u = "d",
+        d = "u",
+    }
+
+    function LoadPaths()
+      local file = io.open(masterFilePath, "r")
+      
+      if file then
+        for line in file:lines() do
+          local pathName, commands = string.match(line, "(%w+)=(.*)")
+          if pathName and commands then
+            paths[pathName] = {}
+            for cmd in string.gmatch(commands, "([^;]+)") do
+              table.insert(paths[pathName], cmd)
+            end
+          end
+        end
+        file:close()
+      else
+        print("Master file not found: " .. masterFilePath)
+        print("Set 'stepper_path' variable to specify custom path, or create the file at the default location.")
+      end
+    end
+
+    function HandleDashCommand(name, line, wildcards)
+      if wildcards and wildcards[1] then
+        LoadPaths()
+        if paths[wildcards[1]] then
+          currentPath = wildcards[1]
+          currentStep = 1
+          print("Current path set to: " .. currentPath)
+          print("Total steps: " .. #paths[currentPath] .. ", First step: " .. paths[currentPath][1])
+        else
+          print("Path '" .. wildcards[1] .. "' not found in the master file.")
+        end
+      else
+        print("Error: No path name provided.")
+      end
+    end
+    
+    function GoBackOneStep()
+        if currentStep > 1 then  -- Check if there is a step to go back to
+            currentStep = currentStep - 1  -- Go back one step
+            local reverseCmd = reverseCommands[paths[currentPath][currentStep]]
+            if reverseCmd then
+                print("Going back one step: " .. reverseCmd)
+                Send(reverseCmd)
+            else
+                print("No reverse command defined for: " .. paths[currentPath][currentStep])
+            end
+        else
+            print("You are at the beginning of the path. Can't go back further.")
+        end
+    end
+
+    function HandleNextCommand(name, line, wildcards)
+      if currentPath and paths[currentPath] and currentStep <= #paths[currentPath] then
+        local groupCmds = paths[currentPath][currentStep]
+        for cmd in string.gmatch(groupCmds, "[^,]+") do
+          print("Executing command: " .. cmd)
+          Send(cmd)
+        end
+        currentStep = currentStep + 1
+
+        if currentStep <= #paths[currentPath] then
+          print("Steps left: " .. (#paths[currentPath] - currentStep + 1) .. ", Next step: " .. paths[currentPath][currentStep])
+        else
+          print("All steps completed for the path: " .. currentPath)
+        end
+      else
+        print("No more steps in the current path or no path loaded.")
+      end
+    end
+   
+    ]]></script>
+
+    <aliases>
+      <alias
+        script="HandleDashCommand"
+        match="^- (\w+)$"
+        regexp="y"        
+        enabled="y"
+      >
+      </alias>
+      <alias
+        script="HandleNextCommand"
+        match="^\.$"
+        regexp="y"        
+        enabled="y"
+      >
+      </alias>
+      <alias
+        script="GoBackOneStep"
+        match="^\.\.$"
+        regexp="y"                
+        enabled="y"
+      >     
+      </alias>           
+    </aliases>
+
+</muclient>
